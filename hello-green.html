@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+   <head>
+      <meta charset='utf-8'>
+      <script src='webgpu.js'></script>
+   </head>
+   <body>
+      <canvas id='e_canvas'>
+      <script>
+
+(async () => {
+   const adapter = await navigator.gpu.requestAdapter();
+   const dev = await adapter.requestDevice({
+      extensions: adapter.extensions,
+   });
+   const q = dev.getQueue();
+
+   const sc_context = e_canvas.getContext('gpu');
+   const sc = sc_context.configureSwapChain({
+      device: dev,
+      format: 'rgba8unorm',
+   });
+
+   const tex = sc.getCurrentTexture();
+   const t_view = tex.createDefaultView();
+
+   const cmd_enc = dev.createCommandEncoder();
+   const pass = cmd_enc.beginRenderPass({
+      colorAttachments: [
+         {
+            attachment: t_view,
+            loadOp: 'clear',
+            storeOp: 'store',
+            clearColor: [0, 1, 0, 1],
+         }
+      ],
+   });
+   pass.endPass();
+
+   const cbuf = cmd_enc.finish();
+   q.submit([cbuf]);
+})();
+
+      </script>
+   </body>
+</html>
