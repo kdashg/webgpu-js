@@ -234,7 +234,7 @@ navigator.gpu_js = (() => {
       return desc;
    }
 
-   class GpuJsTextureView {
+   class GPUTextureView_JS {
       constructor(tex, desc) {
          this.tex = tex;
          this.desc = desc;
@@ -257,7 +257,7 @@ navigator.gpu_js = (() => {
       return desc;
    }
 
-   class GpuJsTexture {
+   class GPUTexture_JS {
       constructor(dev, desc, swap_chain) {
          desc = make_GPUTextureDescriptor(desc);
          this.device = dev;
@@ -316,7 +316,7 @@ navigator.gpu_js = (() => {
       }
 
       createView(desc) {
-         return new GpuJsTextureView(this, make_GPUTextureViewDescriptor(desc));
+         return new GPUTextureView_JS(this, make_GPUTextureViewDescriptor(desc));
       }
 
       createDefaultView() {
@@ -335,7 +335,7 @@ navigator.gpu_js = (() => {
 
    // -
 
-   class GpuJsProgrammablePassEncoder {
+   class GPUProgrammablePassEncoder_JS {
       constructor(cmd_enc) {
          this.cmd_enc = cmd_enc;
       }
@@ -348,7 +348,7 @@ navigator.gpu_js = (() => {
    }
 
    function make_GPURenderPassColorAttachmentDescriptor(desc) {
-      REQUIRE(desc, 'GPURenderPassColorAttachmentDescriptor', 'attachment', GpuJsTextureView);
+      REQUIRE(desc, 'GPURenderPassColorAttachmentDescriptor', 'attachment', GPUTextureView_JS);
       REQUIRE(desc, 'GPURenderPassColorAttachmentDescriptor', 'loadOp');
       REQUIRE(desc, 'GPURenderPassColorAttachmentDescriptor', 'storeOp');
       desc = Object.assign({
@@ -360,7 +360,7 @@ navigator.gpu_js = (() => {
    }
 
    function make_GPURenderPassDepthStencilAttachmentDescriptor(desc) {
-      REQUIRE(desc, 'GPURenderPassDepthStencilAttachmentDescriptor ', 'attachment', GpuJsTextureView);
+      REQUIRE(desc, 'GPURenderPassDepthStencilAttachmentDescriptor ', 'attachment', GPUTextureView_JS);
       REQUIRE(desc, 'GPURenderPassDepthStencilAttachmentDescriptor ', 'depthLoadOp');
       REQUIRE(desc, 'GPURenderPassDepthStencilAttachmentDescriptor ', 'depthStoreOp');
       REQUIRE(desc, 'GPURenderPassDepthStencilAttachmentDescriptor ', 'clearDepth');
@@ -385,7 +385,7 @@ navigator.gpu_js = (() => {
       return desc;
    }
 
-   class GpuJsRenderPassEncoder extends GpuJsProgrammablePassEncoder {
+   class GPURenderPassEncoder_JS extends GPUProgrammablePassEncoder_JS {
       constructor(cmd_enc, desc) {
          super(cmd_enc);
          this.desc = desc;
@@ -452,13 +452,13 @@ navigator.gpu_js = (() => {
    // -
 
 
-   class GpuJsCommandBuffer {
+   class GPUCommandBuffer_JS {
       constructor(enc) {
          this.enc = enc;
       }
    }
 
-   class GpuJsCommandEncoder {
+   class GPUCommandEncoder_JS {
       constructor(device) {
          this.device = device;
          this.in_pass = null;
@@ -477,7 +477,7 @@ navigator.gpu_js = (() => {
 
       beginRenderPass(desc) {
          this._assert();
-         const ret = new GpuJsRenderPassEncoder(this, make_GPURenderPassDescriptor(desc));
+         const ret = new GPURenderPassEncoder_JS(this, make_GPURenderPassDescriptor(desc));
          this.in_pass = ret;
          return ret;
       }
@@ -485,13 +485,29 @@ navigator.gpu_js = (() => {
       finish() {
          this._assert();
          this.is_finished = true;
-         return new GpuJsCommandBuffer(this);
+         return new GPUCommandBuffer_JS(this);
       }
    }
 
    // -
 
-   class GpuJsQueue {
+   function make_GPUShaderModuleDescriptor(desc) {
+      REQUIRE(desc, 'GPUShaderModuleDescriptor', 'code');
+      desc = Object.assign({
+      }, desc);
+      return desc;
+   }
+
+   class GPUShaderModule_JS {
+      constructor(device, desc) {
+         this.device = device;
+         this.desc = make_GPUShaderModuleDescriptor(desc);
+      }
+   }
+
+   // -
+
+   class GPUQueue_JS {
       constructor(device) {
          this.device = device;
       }
@@ -525,7 +541,7 @@ navigator.gpu_js = (() => {
       return desc;
    }
 
-   class GpuJsDeviceLostInfo {
+   class GPUDeviceLostInfo_JS {
       constructor(message) {
          this._message = message.slice();
       }
@@ -533,7 +549,7 @@ navigator.gpu_js = (() => {
       get message() { return this._message; }
    }
 
-   class GpuJsDevice {
+   class GPUDevice_JS {
       constructor() {
          this._gl = null;
          this.is_lost = false;
@@ -544,7 +560,7 @@ navigator.gpu_js = (() => {
             };
          });
 
-         this._queue = new GpuJsQueue(this);
+         this._queue = new GPUQueue_JS(this);
       }
 
       get adapter() { return this._adapter; }
@@ -592,11 +608,15 @@ navigator.gpu_js = (() => {
 
 
       createTexture(desc) {
-         return new GpuJsTexture(this, desc);
+         return new GPUTexture_JS(this, desc);
       }
 
       createCommandEncoder(desc) {
-         return new GpuJsCommandEncoder(this, desc)
+         return new GPUCommandEncoder_JS(this, desc);
+      }
+
+      createShaderModule(desc) {
+         return new GPUShaderModule_JS(this, desc);
       }
 
       getQueue() {
@@ -605,7 +625,7 @@ navigator.gpu_js = (() => {
    }
 
 
-   class GpuJsApapter {
+   class GPUApapter_JS {
       constructor() {}
 
       get name() { return this.last_info.name; }
@@ -620,7 +640,7 @@ navigator.gpu_js = (() => {
             if (!is_subset(desc.limits, this.last_info.limits))
                return no('`limits` not a subset of adapters\'.');
 
-            const ret = new GpuJsDevice();
+            const ret = new GPUDevice_JS();
             ret._adapter = this;
             ret.gl_info = this.last_info;
             yes(ret);
@@ -645,7 +665,7 @@ navigator.gpu_js = (() => {
       }
    }
 
-   class GpuJs {
+   class GPU_JS {
       requestAdapter(desc) {
          desc = Object.assign({}, desc);
          if (!desc.powerPreference) {
@@ -653,7 +673,7 @@ navigator.gpu_js = (() => {
          }
 
          return new Promise((yes, no) => {
-            const ret = new GpuJsApapter();
+            const ret = new GPUApapter_JS();
             ret.desc = desc;
             const gl = ret.make_gl();
             if (!gl)
@@ -670,7 +690,7 @@ navigator.gpu_js = (() => {
    // -
 
    function make_GPUSwapChainDescriptor(desc) {
-      REQUIRE(desc, 'GPUSwapChainDescriptor', 'device', GpuJsDevice);
+      REQUIRE(desc, 'GPUSwapChainDescriptor', 'device', GPUDevice_JS);
       REQUIRE(desc, 'GPUSwapChainDescriptor', 'format');
       desc = Object.assign({
          usage: GPUTextureUsage.OUTPUT_ATTACHMENT,
@@ -678,7 +698,7 @@ navigator.gpu_js = (() => {
       return desc;
    }
 
-   class GpuJsSwapChain {
+   class GPUSwapChain_JS {
       constructor(context, desc) {
          this.context = context;
          this.desc = desc;
@@ -699,7 +719,7 @@ navigator.gpu_js = (() => {
             if (canvas == this.desc.device.gl.canvas) {
                sc_if_fast = this;
             }
-            this.tex = new GpuJsTexture(this.desc.device, desc, sc_if_fast);
+            this.tex = new GPUTexture_JS(this.desc.device, desc, sc_if_fast);
          }
          return this.tex;
       }
@@ -707,7 +727,7 @@ navigator.gpu_js = (() => {
 
    // -
 
-   class GpuJsCanvasContext {
+   class GPUCanvasContext_JS {
       constructor(canvas) {
          this.canvas = canvas;
          this.gl = null;
@@ -735,7 +755,7 @@ navigator.gpu_js = (() => {
          if (!this.gl)
             return null;
 
-         this.swap_chain = new GpuJsSwapChain(this, desc);
+         this.swap_chain = new GPUSwapChain_JS(this, desc);
          return this.swap_chain;
       }
    }
@@ -749,13 +769,13 @@ navigator.gpu_js = (() => {
 
       let ret = ORIG_GET_CONTEXT.apply(this, arguments);
       if (!ret && type_gpu) {
-         ret = new GpuJsCanvasContext(this);
+         ret = new GPUCanvasContext_JS(this);
          this._gpu_js = ret;
       }
       return ret;
    };
 
-   return new GpuJs();
+   return new GPU_JS();
 })();
 
 if (!navigator.gpu) {
