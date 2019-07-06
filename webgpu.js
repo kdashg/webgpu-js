@@ -143,7 +143,7 @@ navigator.gpu_js = (() => {
             g: dict[1],
             b: dict[2],
             a: dict[3],
-         }
+         };
       } else {
          REQUIRE(dict, 'GPUColor', 'r');
          REQUIRE(dict, 'GPUColor', 'g');
@@ -155,18 +155,42 @@ navigator.gpu_js = (() => {
    }
 
    function make_GPUOrigin2D(dict) {
-      return Object.assign({
+      dict = Object.assign({
          x: dict[0] || 0,
          y: dict[1] || 0,
       }, dict);
+      Object.defineProperties(dict, {
+         width: {
+            get: () => { throw new Error('No `GPUOrigin2D.width`. Did you mean `x`?'); },
+         },
+         height: {
+            get: () => { throw new Error('No `GPUOrigin2D.height`. Did you mean `y`?'); },
+         },
+         depth: {
+            get: () => { throw new Error('No `GPUOrigin2D.depth`.'); },
+         },
+      });
+      return dict;
    }
 
    function make_GPUOrigin3D(dict) {
-      return Object.assign({
+      dict = Object.assign({
          x: dict[0] || 0,
          y: dict[1] || 0,
          z: dict[2] || 0,
       }, dict);
+      Object.defineProperties(dict, {
+         width: {
+            get: () => { throw new Error('No `GPUOrigin3D.width`. Did you mean `x`?'); },
+         },
+         height: {
+            get: () => { throw new Error('No `GPUOrigin3D.height`. Did you mean `y`?'); },
+         },
+         depth: {
+            get: () => { throw new Error('No `GPUOrigin3D.depth`. Did you mean `z`?'); },
+         },
+      });
+      return dict;
    }
 
    function make_GPUExtent3D(dict) {
@@ -176,13 +200,24 @@ navigator.gpu_js = (() => {
             width: dict[0],
             height: dict[1],
             depth: dict[2],
-         }
+         };
       } else {
          dict = Object.assign({}, dict);
          REQUIRE(dict, 'GPUExtent3D', 'width');
          REQUIRE(dict, 'GPUExtent3D', 'height');
          REQUIRE(dict, 'GPUExtent3D', 'depth');
       }
+      Object.defineProperties(dict, {
+         x: {
+            get: () => { throw new Error('No `GPUExtent3D.x`. Did you mean `width`?'); },
+         },
+         y: {
+            get: () => { throw new Error('No `GPUExtent3D.y`. Did you mean `height`?'); },
+         },
+         z: {
+            get: () => { throw new Error('No `GPUExtent3D.z`. Did you mean `depth`?'); },
+         },
+      });
       return dict;
    }
 
@@ -237,12 +272,19 @@ navigator.gpu_js = (() => {
             this._map_buf = new Uint8Array(desc.size);
          }
 
+         this._gl_target = GL.ARRAY_BUFFER;
+         if (desc.usage & GPUBufferUsage.INDEX) {
+            ASSERT(!(desc.usage & (GPUBufferUsage.VERTEX | GPUBufferUsage.UNIFORM)),
+                   'Not supported: GPUBufferUsage.INDEX combined with VERTEX and UNIFORM');
+            this._gl_target = GL.ELEMENT_ARRAY_BUFFER;
+         }
+
          if (!will_start_mapped) {
             const gl = this.device.gl;
             this.buf = gl.createBuffer();
-            gl.bindBuffer(GL.COPY_WRITE_BUFFER, this.buf);
-            gl.bufferData(GL.COPY_WRITE_BUFFER, desc.size, this._gl_usage);
-            gl.bindBuffer(GL.COPY_WRITE_BUFFER, null);
+            gl.bindBuffer(this._gl_target, this.buf);
+            gl.bufferData(this._gl_target, desc.size, this._gl_usage);
+            gl.bindBuffer(this._gl_target, null);
          }
       }
 
@@ -285,9 +327,9 @@ navigator.gpu_js = (() => {
 
          this.device._add_fenced_todo(() => {
             const gl = this.device.gl;
-            gl.bindBuffer(GL.COPY_READ_BUFFER, this.buf);
-            gl.getBufferSubData(GL.COPY_READ_BUFFER, 0, this._read_map);
-            gl.bindBuffer(GL.COPY_READ_BUFFER, null);
+            gl.bindBuffer(this._gl_target, this.buf);
+            gl.getBufferSubData(this._gl_target, 0, this._read_map);
+            gl.bindBuffer(this._gl_target, null);
 
             this._map_ready = true;
             ASSERT(this._mapped() && this._map_ready, '(should be ready)');
@@ -307,13 +349,13 @@ navigator.gpu_js = (() => {
          const gl = this.device.gl;
          if (!this.buf) {
             this.buf = gl.createBuffer();
-            gl.bindBuffer(GL.COPY_WRITE_BUFFER, this.buf);
-            gl.bufferData(GL.COPY_WRITE_BUFFER, this._write_map, this._gl_usage);
-            gl.bindBuffer(GL.COPY_WRITE_BUFFER, null);
+            gl.bindBuffer(this._gl_target, this.buf);
+            gl.bufferData(this._gl_target, this._write_map, this._gl_usage);
+            gl.bindBuffer(this._gl_target, null);
          } else {
-            gl.bindBuffer(GL.COPY_WRITE_BUFFER, this.buf);
-            gl.bufferSubData(GL.COPY_WRITE_BUFFER, 0, this._write_map);
-            gl.bindBuffer(GL.COPY_WRITE_BUFFER, null);
+            gl.bindBuffer(this._gl_target, this.buf);
+            gl.bufferSubData(this._gl_target, 0, this._write_map);
+            gl.bindBuffer(this._gl_target, null);
          }
          this._write_map = null;
       }
@@ -605,14 +647,54 @@ navigator.gpu_js = (() => {
       return (type == GL.FLOAT || type == GL.HALF_FLOAT || normalized);
    }
 
+   const BLEND_EQUATION = {
+      'add'             : GL.FUNC_ADD,
+      'subtract'        : GL.FUNC_SUBTRACT,
+      'reverse-subtract': GL.FUNC_REVERSE_SUBTRACT,
+      'min'             : GL.MIN,
+      'max'             : GL.MAX,
+   };
+   const BLEND_FUNC = {
+      'zero'                 : GL.ZERO,
+      'one'                  : GL.ONE,
+      'src-color'            : GL.SRC_COLOR,
+      'one-minus-src-color'  : GL.ONE_MINUS_SRC_COLOR,
+      'src-alpha'            : GL.SRC_ALPHA,
+      'one-minus-src-alpha'  : GL.ONE_MINUS_SRC_ALPHA,
+      'dst-color'            : GL.DST_COLOR,
+      'one-minus-dst-color'  : GL.ONE_MINUS_DST_COLOR,
+      'dst-alpha'            : GL.DST_ALPHA,
+      'one-minus-dst-alpha'  : GL.ONE_MINUS_DST_ALPHA,
+      'blend-color'          : GL.CONSTANT_COLOR,
+      'one-minus-blend-color': GL.ONE_MINUS_CONSTANT_COLOR,
+   };
+   const COMPARE_FUNC = {
+      'never'        : GL.NEVER,
+      'less'         : GL.LESS,
+      'equal'        : GL.EQUAL,
+      'less-equal'   : GL.LEQUAL,
+      'greater'      : GL.GREATER,
+      'not-equal'    : GL.NOTEQUAL,
+      'greater-equal': GL.GEAQUAL,
+      'always'       : GL.ALWAYS,
+   };
+   const STENCIL_OP = {
+      'keep'           : GL.KEEP,
+      'zero'           : GL.ZERO,
+      'replace'        : GL.REPLACE,
+      'invert'         : GL.INVERT,
+      'increment-clamp': GL.INCR,
+      'decrement-clamp': GL.DECR,
+      'increment-wrap' : GL.INCR_WRAP,
+      'decrement-wrap' : GL.DECR_WRAP,
+   };
+
    class GPURenderPipeline_JS {
       constructor(device, desc) {
          desc = make_GPURenderPipelineDescriptor(desc);
 
          this.device = device;
          this.desc = desc;
-
-         this._prim_topo = PRIM_TOPO[this.desc.primitiveTopology];
 
          const gl = this.device.gl;
          this.vao = gl.createVertexArray();
@@ -629,7 +711,8 @@ navigator.gpu_js = (() => {
 
                const floatish = is_floatish(format.type, format.norm);
                attrib.set_buf_offset = (gpu_buf, buf_offset) => {
-                  gl.bindBuffer(GL.ARRAY_BUFFER, gpu_buf.buf);
+                  const gl_buf = gpu_buf ? gpu_buf.buf : null;
+                  gl.bindBuffer(GL.ARRAY_BUFFER, gl_buf);
                   if (floatish) {
                      gl.vertexAttribPointer(attrib.shaderLocation, format.size, format.type,
                                             format.norm, buff_desc.stride,
@@ -674,11 +757,71 @@ navigator.gpu_js = (() => {
             gl.deleteShader(fs);
          }
          this.prog = prog;
+
+         // -
+
+         function equal_GPUBlendDescriptor(a, b) {
+            return (a.srcFactor == b.srcFactor &&
+                    a.dstFactor == b.dstFactor &&
+                    a.operation == b.operation);
+         }
+         function is_trivial_blend(x) {
+            return (x.srcFactor == 'one' &&
+                    x.dstFactor == 'zero' &&
+                    x.operation == 'add');
+         }
+
+         let example = null;
+         let matching = true;
+         desc.colorStates.forEach((cur, i) => {
+            if (!example) {
+               example = cur;
+            }
+            matching &= (equal_GPUBlendDescriptor(cur.alphaBlend, example.alphaBlend) &&
+                         equal_GPUBlendDescriptor(cur.colorBlend, example.colorBlend) &&
+                         cur.writeMask == example.writeMask);
+         });
+         ASSERT(matching, 'Differing alphaBlend, colorBlend, and writeMask not supported.');
+
+         const has_blending = example && (!is_trivial_blend(example.alphaBlend) ||
+                                          !is_trivial_blend(example.colorBlend));
+         this._set_blend_and_mask = () => {
+            if (example) {
+               gl.colorMask(example.writeMask & GPUColorWriteBits.RED,
+                            example.writeMask & GPUColorWriteBits.GREEN,
+                            example.writeMask & GPUColorWriteBits.BLUE,
+                            example.writeMask & GPUColorWriteBits.ALPHA);
+            }
+            if (has_blending) {
+               gl.enable(GL.BLEND);
+               gl.blendEquationSeparate(BLEND_EQUATION[example.colorBlend.operation],
+                                        BLEND_EQUATION[example.alphaBlend.operation]);
+               gl.blendFuncSeparate(BLEND_FUNC[example.colorBlend.srcFactor],
+                                    BLEND_FUNC[example.colorBlend.dstFactor],
+                                    BLEND_FUNC[example.alphaBlend.srcFactor],
+                                    BLEND_FUNC[example.alphaBlend.dstFactor]);
+            } else {
+               gl.disable(GL.BLEND);
+            }
+         };
+
+         this._set_stencil_ref = (ref) => {
+            const ds_desc = desc.depthStencilState
+            if (!ds_desc)
+               return;
+            gl.stencilFuncSeparate(GL.FRONT, COMPARE_FUNC[ds_desc.stencilFront.compare], ref,
+                                   ds_desc.stencilReadMask);
+            gl.stencilFuncSeparate(GL.BACK, COMPARE_FUNC[ds_desc.stencilBack.compare], ref,
+                                   ds_desc.stencilReadMask);
+         };
       }
 
-      _setup(color_attachments) {
+      _setup(color_attachments, ds_attach_desc) {
          const gl = this.device.gl;
+
+         gl.bindVertexArray(this.vao);
          gl.useProgram(this.prog);
+         this._set_blend_and_mask();
 
          const rast = this.desc.rasterizationState;
          gl.frontFace(rast.frontFace == 'ccw' ? GL.CCW : GL.CW);
@@ -700,9 +843,7 @@ navigator.gpu_js = (() => {
             for (let i in this.desc.colorStates) {
                i |= 0;
                const ca = color_attachments[i];
-               if (ca._clear) {
-                  ca._clear();
-               }
+               ca._load_op();
 
                while (draw_bufs.length < i) {
                   draw_bufs.push(0);
@@ -714,6 +855,44 @@ navigator.gpu_js = (() => {
                }
             }
             gl.drawBuffers(draw_bufs);
+
+            // -
+
+            let depth_test = false;
+            let stencil_test = false;
+            const ds_desc = this.desc.depthStencilState;
+            if (ds_desc) {
+               depth_test = (ds_desc.depthCompare == 'always' &&
+                             !ds_desc.depthWriteEnabled);
+               stencil_test = (ds_desc.stencilFront.compare == 'always' &&
+                               ds_desc.stencilBack.compare == 'always' &&
+                               !ds_desc.stencilWriteMask);
+
+               ASSERT(ds_attach_desc, 'Pipeline has depth-stencil but render-pass does not.');
+               ds_attach_desc._load_op();
+            }
+
+            if (depth_test) {
+               gl.enable(gl.DEPTH_TEST);
+               gl.depthMask(ds_desc.depthWriteEnabled);
+               gl.depthFunc(COMPARE_FUNC[ds_desc.depthCompare]);
+            } else {
+               gl.disable(gl.DEPTH_TEST);
+            }
+            if (stencil_test) {
+               gl.enable(gl.STENCIL_TEST);
+               gl.stencilOpSeparate(GL.FRONT,
+                                    STENCIL_OP[ds_desc.stencilFront.failOp],
+                                    STENCIL_OP[ds_desc.stencilFront.depthFailOp],
+                                    STENCIL_OP[ds_desc.stencilFront.passOp]);
+               gl.stencilOpSeparate(GL.BACK,
+                                    STENCIL_OP[ds_desc.stencilBack.failOp],
+                                    STENCIL_OP[ds_desc.stencilBack.depthFailOp],
+                                    STENCIL_OP[ds_desc.stencilBack.passOp]);
+               gl.stencilMask(ds_desc.stencilWriteMask);
+            } else {
+               gl.disable(gl.STENCIL_TEST);
+            }
          } else {
             gl.enable(GL.RASTERIZER_DISCARD);
          }
@@ -723,8 +902,6 @@ navigator.gpu_js = (() => {
          } else {
             gl.disable(GL.SAMPLE_ALPHA_TO_COVERAGE);
          }
-
-         gl.bindVertexArray(this.vao);
       }
 
       _set_vert_buffers(set_list) {
@@ -754,7 +931,7 @@ navigator.gpu_js = (() => {
       REQUIRE(desc, 'GPURenderPipelineDescriptor', 'primitiveTopology');
       REQUIRE(desc, 'GPURenderPipelineDescriptor', 'rasterizationState', null, make_GPURasterizationStateDescriptor);
       REQUIRE_SEQ(desc, 'GPURenderPipelineDescriptor', 'colorStates', null, make_GPUColorStateDescriptor);
-      REQUIRE(desc, 'GPURenderPipelineDescriptor', 'vertexInput');
+      REQUIRE(desc, 'GPURenderPipelineDescriptor', 'vertexInput', null, make_GPUVertexInputDescriptor);
       if (desc.fragmentStage) {
          desc.fragmentStage = make_GPUPipelineStageDescriptor(desc.fragmentStage);
       }
@@ -822,10 +999,10 @@ navigator.gpu_js = (() => {
          stepMode: 'vertex',
       }, desc);
       REQUIRE(desc, 'GPUVertexBufferDescriptor', 'stride');
-      REQUIRE_SEQ(desc, 'GPUVertexBufferDescriptor ', 'vertexBuffers', null, make_GPUVertexAttributeDescriptor);
+      REQUIRE_SEQ(desc, 'GPUVertexBufferDescriptor ', 'attributeSet', null, make_GPUVertexAttributeDescriptor);
       return desc;
    }
-   function make_nullable_GPUVertexAttributeDescriptor(desc) {
+   function make_GPUVertexAttributeDescriptor(desc) {
       desc = Object.assign({
          offset: 0,
       }, desc);
@@ -877,6 +1054,8 @@ navigator.gpu_js = (() => {
    }
 
    function make_GPURenderPassDepthStencilAttachmentDescriptor(desc) {
+      if (!desc)
+         return null;
       desc = Object.assign({
          clearStencil: 0,
       }, desc);
@@ -891,20 +1070,24 @@ navigator.gpu_js = (() => {
 
    function make_GPURenderPassDescriptor(desc) {
       desc = Object.assign({
-         depthStencilAttachment: null,
+         depthStencilAttachment: make_GPURenderPassDepthStencilAttachmentDescriptor(desc.depthStencilAttachment),
       }, desc);
       REQUIRE_SEQ(desc, 'GPURenderPassDescriptor ', 'colorAttachments', null, make_GPURenderPassColorAttachmentDescriptor);
-
-      if (desc.depthStencilAttachment) {
-         desc.depthStencilAttachment = make_GPURenderPassDepthStencilAttachmentDescriptor(desc.depthStencilAttachment);
-      }
       return desc;
    }
 
+   const INDEX_FORMAT = {
+      uint16: {type: GL.UNSIGNED_SHORT, size: 2},
+      uint32: {type: GL.UNSIGNED_INT, size: 4},
+   };
+
    class GPURenderPassEncoder_JS extends GPUProgrammablePassEncoder_JS {
       constructor(cmd_enc, desc) {
+         desc =  make_GPURenderPassDescriptor(desc);
+
          super(cmd_enc);
          this.desc = desc;
+
          const device = cmd_enc.device;
          const gl = device.gl;
 
@@ -933,14 +1116,16 @@ navigator.gpu_js = (() => {
                } else if (format.includes('uint')) {
                   fn_clear = gl.clearBufferuiv;
                }
-               x._needs_clear = true;
-               x._clear = () => {
-                  if (!x._needs_clear)
+               let did_load = false;
+               x._load_op = () => {
+                  if (did_load)
                      return;
+                  did_load = true;
                   //console.log('clear', i, color);
                   fn_clear.call(gl, GL.COLOR, i, color);
-                  x._needs_clear = false;
                };
+            } else {
+               x._load_op = () => {};
             }
 
             if (this.fb) {
@@ -959,19 +1144,105 @@ navigator.gpu_js = (() => {
             }
          });
 
-         this.cmd_enc._add(() => {
-            this._pipeline = null;
-            this._vert_buf_list = [];
-         });
+         const DEPTH_STENCIL_FORMAT = {
+            'depth32float': {depth: true},
+            'depth24plus': {depth: true},
+            'depth24plus-stencil8': {depth: true, stencil: true},
+            'r8sint': {stencil: true}, // Maybe?
+         };
+         const DEPTH_STENCIL_ASPECT = {
+            'depth-only': {depth: true},
+            'stencil-only': {stencil: true},
+         };
+
+         const ds_attach_desc = desc.depthStencilAttachment;
+         if (ds_attach_desc) {
+            let ds_info = DEPTH_STENCIL_ASPECT[ds_attach_desc.attachment.desc.aspect];
+            if (!ds_info) {
+               ds_info = DEPTH_STENCIL_FORMAT[ds_attach_desc.attachment.desc.format];
+            }
+            let did_load = false;
+            ds_attach_desc._load_op = () => {
+               if (did_load)
+                  return;
+               did_load = true;
+               const clear_depth = (ds_info.depth && ds_attach_desc.depthLoadOp == 'clear');
+               const clear_stencil = (ds_info.stencil && ds_attach_desc.stencilLoadOp == 'clear');
+               if (clear_depth) {
+                  gl.depthMask(true);
+                  if (!clear_stencil) {
+                     gl.clearBufferfv(GL.DEPTH, 0, [ds_attach_desc.clearDepth]);
+                  }
+               }
+               if (clear_stencil) {
+                  gl.stencilMask(0xffffffff);
+                  if (clear_depth) {
+                     gl.clearBufferfi(GL.DEPTH_STENCIL, 0, ds_attach_desc.clearDepth, ds_attach_desc.clearStencil);
+                  } else {
+                     gl.clearBufferiv(GL.STENCIL, 0, [ds_attach_desc.clearStencil]);
+                  }
+               }
+            };
+         }
+
+         this._vert_buf_list = [];
+
+         const attachment = desc.depthStencilAttachment || desc.colorAttachments[0];
+         const size = attachment.attachment.tex.desc.size;
+
+         this.setBlendColor([1, 1, 1, 1]);
+         this.setStencilReference(0);
+         this.setViewport(0, 0, size.width, size.height, 0, 1);
+         this.setScissorRect(0, 0, size.width, size.height);
+         this.setIndexBuffer(0, [], []);
+         this.setVertexBuffers(0, [], []);
       }
 
       setPipeline(pipeline) {
          this.cmd_enc._add(() => {
             this._pipeline = pipeline;
-            this._pipeline_false = true;
+            this._pipeline_ready = false;
+            this._vert_bufs_ready = false;
+            this._stencil_ref_ready = false;
+         });
+      }
+      setBlendColor(color) {
+         color = make_GPUColor(color);
+         this.cmd_enc._add(() => {
+            const gl = this.cmd_enc.device.gl;
+            gl.blendColor(color.r, color.g, color.b, color.a);
+         });
+      }
+      setStencilReference(ref) {
+         this.cmd_enc._add(() => {
+            this._stencil_ref = ref;
+            this._stencil_ref_ready = false;
          });
       }
 
+      setViewport(x, y, w, h, min_depth, max_depth) {
+         this.cmd_enc._add(() => {
+            const gl = this.cmd_enc.device.gl;
+            gl.viewport(x, y, w, h);
+            gl.depthRange(min_depth, max_depth);
+         });
+      }
+
+      setScissorRect(x, y, w, h) {
+         this.cmd_enc._add(() => {
+            const gl = this.cmd_enc.device.gl;
+            gl.scissor(x, y, w, h);
+         });
+      }
+
+      setIndexBuffer(buffer, offset) {
+         this.cmd_enc._add(() => {
+            const gl = this.cmd_enc.device.gl;
+            const gl_buf = buffer ? buffer.buf : null;
+            gl.bindBuffer(GL.ELEMENT_ARRAY_BUFFER, gl_buf);
+            this._index_buf_offset = offset;
+         });
+      }
       setVertexBuffers(start_slot, buffers, offsets) {
          this.cmd_enc._add(() => {
             for (let i in buffers) {
@@ -983,29 +1254,48 @@ navigator.gpu_js = (() => {
          });
       }
 
-      draw(vert_count, inst_count, vert_start, inst_start) {
-         ASSERT(inst_start == 0, 'firstInstance must be 0');
-         const gl = this.cmd_enc.device.gl;
-         this.cmd_enc._add(() => {
-            if (!this._pipeline_ready) {
-               this._pipeline._setup(this.desc.colorAttachments);
-               this._pipeline_ready = true;
-            }
-            if (!this._vert_bufs_ready) {
-               this._pipeline._set_vert_buffers(this._vert_buf_list);
-               this._vert_bufs_ready = true;
-            }
+      _pre_draw() {
+         if (!this._pipeline_ready) {
+            this._pipeline._setup(this.desc.colorAttachments, this.desc.depthStencilAttachment);
+            this._pipeline_ready = true;
+         }
+         if (!this._vert_bufs_ready) {
+            this._pipeline._set_vert_buffers(this._vert_buf_list);
+            this._vert_bufs_ready = true;
+         }
+         if (!this._stencil_ref_ready) {
+            this._pipeline._set_stencil_ref(this._stencil_ref);
+            this._stencil_ref_ready = true;
+         }
+      }
 
-            gl.drawArraysInstanced(this._pipeline._prim_topo, vert_start, vert_count, inst_count);
+      draw(vert_count, inst_count, base_vert, base_inst) {
+         ASSERT(base_inst == 0, 'firstInstance must be 0');
+         this.cmd_enc._add(() => {
+            this._pre_draw();
+
+            const gl = this.cmd_enc.device.gl;
+            const prim_topo = PRIM_TOPO[this._pipeline.desc.primitiveTopology];
+            gl.drawArraysInstanced(prim_topo, base_vert, vert_count, inst_count);
+         });
+      }
+      drawIndexed(index_count, inst_count, base_index, base_vert, base_inst) {
+         ASSERT(base_inst == 0, 'firstInstance must be 0');
+         this.cmd_enc._add(() => {
+            this._pre_draw();
+
+            const gl = this.cmd_enc.device.gl;
+            const prim_topo = PRIM_TOPO[this._pipeline.desc.primitiveTopology];
+            const format = INDEX_FORMAT[this._pipeline.desc.vertexInput.indexFormat];
+            const offset = this._index_buf_offset + base_index * format.size;
+            gl.drawElementsInstanced(prim_topo, index_count, format.type, offset, inst_count);
          });
       }
 
       endPass() {
          this.cmd_enc._add(() => {
             for (const x of this.desc.colorAttachments) {
-               if (x._clear) {
-                  x._clear();
-               }
+               x._load_op();
             }
          });
          super.endPass();
@@ -1040,7 +1330,7 @@ navigator.gpu_js = (() => {
 
       beginRenderPass(desc) {
          this._assert();
-         const ret = new GPURenderPassEncoder_JS(this, make_GPURenderPassDescriptor(desc));
+         const ret = new GPURenderPassEncoder_JS(this, desc);
          this.in_pass = ret;
          return ret;
       }
@@ -1339,7 +1629,7 @@ navigator.gpu_js = (() => {
 
          this.gl = desc.device._ensure_gl(this.canvas);
          if (this.gl.canvas != this.canvas) {
-            console.log('Slowpath: separate gl context for swap chain.');
+            console.log('Slowpath: configureSwapChain called after GL creation for GPUDevice.');
             this.gl = desc.device.adapter.make_gl(this.canvas);
          }
          if (!this.gl)

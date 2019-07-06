@@ -11,18 +11,22 @@
 const VS_SRC = `
    #version 300 es
    layout(location = 0) in vec2 a_pos;
+   layout(location = 1) in lowp vec4 a_color;
+   out lowp vec4 v_color;
 
    void main() {
       gl_Position = vec4(a_pos, 0, 1);
+      v_color = a_color;
    }
 `.trim();
 
 const FS_SRC = `
    #version 300 es
+   in lowp vec4 v_color;
    out lowp vec4 fd_color;
 
    void main() {
-      fd_color = vec4(1, 0.3, 0.3, 1);
+      fd_color = v_color;
    }
 `.trim();
 
@@ -44,18 +48,30 @@ const FS_SRC = `
 
    // -
 
-   const v_data = new Float32Array([
-      -0.5, -0.5,
-       0.5, -0.5,
-       0.0, 0.7,
-   ]);
+   function make_buffer(dev, data, usage) {
+      let [buf, mab] = dev.createBufferMapped({
+         size: data.byteLength,
+         usage: usage,
+      });
+      new data.constructor(mab).set(data);
+      buf.unmap();
+      return buf;
+   }
 
-   let [vbuf, mab] = dev.createBufferMapped({
-      size: v_data.byteLength,
-      usage: GPUBufferUsage.VERTEX,
-   });
-   new Float32Array(mab).set(v_data);
-   vbuf.unmap();
+   const v_data = new Float32Array([
+      -0.5, -0.5, 0,
+       0.5, -0.5, 0,
+      -0.5,  0.5, 0,
+       0.5,  0.5, 0,
+   ]);
+   const v_data_u8 = new Uint8Array(v_data.buffer);
+   v_data_u8.set([255, 0, 0, 127], 12*0+4*2);
+   v_data_u8.set([0, 255, 0, 127], 12*1+4*2);
+   v_data_u8.set([0, 0, 255, 127], 12*2+4*2);
+   v_data_u8.set([255, 255, 0, 127], 12*3+4*2);
+
+   const vbuf = make_buffer(dev, v_data, GPUBufferUsage.VERTEX);
+   const ibuf = make_buffer(dev, new Uint16Array([0, 1, 3]), GPUBufferUsage.INDEX);
 
    // -
 
@@ -80,15 +96,27 @@ const FS_SRC = `
       rasterizationState: {},
       colorStates: [{
          format: 'rgba8unorm',
-         alphaBlend: {},
-         colorBlend: {},
+         alphaBlend: {
+            srcFactor: 'one',
+            dstFactor: 'one-minus-src-alpha',
+         },
+         colorBlend: {
+            srcFactor: 'src-alpha',
+            dstFactor: 'one-minus-src-alpha',
+         },
       }],
       vertexInput: {
+         indexFormat: 'uint16',
          vertexBuffers: [{
-            stride: 8,
+            stride: 4*3,
             attributeSet: [{
                format: 'float2',
                shaderLocation: 0,
+               offset: 4*0,
+            },{
+               format: 'uchar4norm',
+               shaderLocation: 1,
+               offset: 4*2,
             }],
          }],
       },
@@ -110,6 +138,8 @@ const FS_SRC = `
    pass.setPipeline(rp);
    pass.setVertexBuffers(0, [vbuf], [0]);
    pass.draw(3, 1, 0, 0);
+   pass.setIndexBuffer(ibuf, 0);
+   pass.drawIndexed(3, 1, 0, 0, 0);
    pass.endPass();
 
    const cbuf = cmd_enc.finish();
