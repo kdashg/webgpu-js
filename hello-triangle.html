@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html>
+   <head>
+      <meta charset='utf-8'>
+      <script src='webgpu.js'></script>
+   </head>
+   <body>
+      <canvas id='e_canvas'>
+      <script>
+
+const VS_SRC = `
+   #version 300 es
+   layout(location = 0) in vec2 a_pos;
+
+   void main() {
+      gl_Position = vec4(a_pos, 0, 1);
+   }
+`.trim();
+
+const FS_SRC = `
+   #version 300 es
+   out lowp vec4 fd_color;
+
+   void main() {
+      fd_color = vec4(1, 0.3, 0.3, 1);
+   }
+`.trim();
+
+(async () => {
+   const adapter = await navigator.gpu.requestAdapter();
+   const dev = await adapter.requestDevice({
+      extensions: adapter.extensions,
+   });
+   const q = dev.getQueue();
+
+   const sc_context = e_canvas.getContext('gpu');
+   const sc = sc_context.configureSwapChain({
+      device: dev,
+      format: 'rgba8unorm',
+   });
+
+   const tex = sc.getCurrentTexture();
+   const t_view = tex.createDefaultView();
+
+   // -
+
+   const v_data = new Float32Array([
+      -0.5, -0.5,
+       0.5, -0.5,
+       0.0, 0.7,
+   ]);
+
+   let [vbuf, mab] = dev.createBufferMapped({
+      size: v_data.byteLength,
+      usage: GPUBufferUsage.VERTEX,
+   });
+   new Float32Array(mab).set(v_data);
+   vbuf.unmap();
+
+   // -
+
+   const v_mod = dev.createShaderModule({code: VS_SRC});
+   const f_mod = dev.createShaderModule({code: FS_SRC});
+
+   const layout = dev.createPipelineLayout({
+      bindGroupLayouts: [],
+   });
+
+   const rp = dev.createRenderPipeline({
+      layout: layout,
+      vertexStage: {
+         module: v_mod,
+         entryPoint: 'main',
+      },
+      fragmentStage: {
+         module: f_mod,
+         entryPoint: 'main',
+      },
+      primitiveTopology: 'triangle-list',
+      rasterizationState: {},
+      colorStates: [{
+         format: 'rgba8unorm',
+         alphaBlend: {},
+         colorBlend: {},
+      }],
+      vertexInput: {
+         vertexBuffers: [{
+            stride: 8,
+            attributeSet: [{
+               format: 'float2',
+               shaderLocation: 0,
+            }],
+         }],
+      },
+   });
+
+   // -
+
+   const cmd_enc = dev.createCommandEncoder();
+   const pass = cmd_enc.beginRenderPass({
+      colorAttachments: [
+         {
+            attachment: t_view,
+            loadOp: 'clear',
+            storeOp: 'store',
+            clearColor: [0, 1, 0, 1],
+         }
+      ],
+   });
+   pass.setPipeline(rp);
+   pass.setVertexBuffers(0, [vbuf], [0]);
+   pass.draw(3, 1, 0, 0);
+   pass.endPass();
+
+   const cbuf = cmd_enc.finish();
+   q.submit([cbuf]);
+})();
+
+      </script>
+   </body>
+</html>
