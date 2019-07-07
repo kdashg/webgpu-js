@@ -32,9 +32,27 @@ const FS_SRC = `
 
 (async () => {
    const adapter = await navigator.gpu.requestAdapter();
-   const dev = await adapter.requestDevice({
+   let dev = await adapter.requestDevice({
       extensions: adapter.extensions,
    });
+
+   dev.lost.then(() => {
+      console.log('device.lost.then()');
+   });
+   const timeout = new Promise((good, bad) => {
+      setTimeout(1000, () => {
+         bad('Timed out waiting for device.lost!');
+      });
+   });
+   dev._lose_gl();
+   await Promise.race([dev.lost, timeout]);
+
+   // -
+
+   dev = await adapter.requestDevice({
+      extensions: adapter.extensions,
+   });
+
    const q = dev.getQueue();
 
    const sc_context = e_canvas.getContext('gpu');
@@ -48,10 +66,11 @@ const FS_SRC = `
 
    // -
 
+
    dev.pushErrorScope('validation');
    dev.pushErrorScope('out-of-memory');
    const bad_buf = dev.createBuffer({
-      size: 80 * 1000 * 1000 * 1000,
+      size: 100 * 1000 * 1000 * 1000,
       usage: GPUBufferUsage.TRANSFER_SRC | GPUBufferUsage.TRANSFER_DST,
    });
    bad_buf.unmap();

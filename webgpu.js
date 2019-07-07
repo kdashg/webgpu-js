@@ -123,8 +123,13 @@ navigator.gpu_js = (() => {
 
    // -
 
+   function console_error_passthrough(e) {
+      console.error(e);
+      return e;
+   }
+
    function ASSERT(val, info) {
-      if (!val) throw new Error('ASSERT: ' + info);
+      if (!val) throw console_error_passthrough(new Error('ASSERT: ' + info));
    }
 
    // -
@@ -154,17 +159,15 @@ navigator.gpu_js = (() => {
    // -
 
    function REQUIRE_NON_NULL(desc, name) {
-      if (!desc) console.error(new TypeError(name + ' shall not be null.'));
-      if (!desc) throw new TypeError(name + ' shall not be null.');
+      if (!desc) throw console_error_passthrough(new TypeError(name + ' shall not be null.'));
    }
 
    function REQUIRE(dict, type, key, val_type, fn_map) {
       const name = '`' + type + '.' + key + '`';
-      if (dict[key] === undefined) throw new ReferenceError(name + ' required.');
+      if (dict[key] === undefined) throw console_error_passthrough(new ReferenceError(name + ' required.'));
       if (val_type) {
          if (!(dict[key] instanceof val_type)) {
-            //console.log('val_type', val_type);
-            throw new TypeError(name + ' must be `' + val_type.name + '`.');
+            throw console_error_passthrough(new TypeError(name + ' must be `' + val_type.name + '`.'));
          }
       }
       if (fn_map) {
@@ -174,15 +177,14 @@ navigator.gpu_js = (() => {
 
    function REQUIRE_SEQ(dict, type, key, val_type, fn_map) {
       const name = '`' + type + '.' + key + '`';
-      if (dict[key] === undefined) throw new ReferenceError(name + ' required.');
-      if (dict[key].length === undefined) throw new TypeError(name + ' must be a sequence.');
+      if (dict[key] === undefined) throw console_error_passthrough(new ReferenceError(name + ' required.'));
+      if (dict[key].length === undefined) throw console_error_passthrough(new TypeError(name + ' must be a sequence.'));
       const seq = dict[key];
       for (const i in seq) {
          const name_i = type + '.' + key + '[' + i + ']';
          if (val_type) {
             if (!(seq[i] instanceof val_type)) {
-               //console.log('val_type', val_type);
-               throw new TypeError(name + ' must be `' + val_type.name + '`.');
+               throw new console_error_passthrough(TypeError(name + ' must be `' + val_type.name + '`.'));
             }
          }
          if (fn_map) {
@@ -193,7 +195,7 @@ navigator.gpu_js = (() => {
 
    function REQUIRE_VAL(dict, type, key, val) {
       const name = '`' + type + '.' + key + '`';
-      if (dict[key] !== val) throw new Error(name + ' must be ' + val);
+      if (dict[key] !== val) throw console_error_passthrough(new Error(name + ' must be ' + val));
    }
 
    function VALIDATE(ok, message) {
@@ -353,10 +355,16 @@ navigator.gpu_js = (() => {
             this.buf = gl.createBuffer();
             gl.bindBuffer(this._gl_target, this.buf);
 
-            ASSERT(!gl.getError(), 'Should be no GL error.');
+            let err = gl.getError();
+            ASSERT(!err, 'Unexpected WebGL error: 0x' + err.toString(16));
             gl.bufferData(this._gl_target, desc.size, this._gl_usage);
-            if (gl.getError() == GL.OUT_OF_MEMORY)
+            err = gl.getError();
+            if (err == GL.OUT_OF_MEMORY) {
+               while (gl.getError()) {}
+               this.desc = null;
                throw new GPUOutOfMemoryError();
+            }
+            ASSERT(!err, 'Unexpected WebGL error: 0x' + err.toString(16));
 
             gl.bindBuffer(this._gl_target, null);
          }
@@ -380,6 +388,7 @@ navigator.gpu_js = (() => {
 
       mapWriteAsync() {
          try {
+            VALIDATE(!this.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
             VALIDATE(!this._mapped(), 'Cannot be mapped.');
             VALIDATE(this.desc.usage & GPUBufferUsage.MAP_WRITE, 'Missing GPUBufferUsage.MAP_WRITE.');
@@ -394,6 +403,7 @@ navigator.gpu_js = (() => {
 
       mapReadAsync() {
          try {
+            VALIDATE(!this.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
             VALIDATE(!this._mapped(), 'Cannot be mapped.');
             VALIDATE(this.desc.usage & GPUBufferUsage.MAP_READ, 'Missing GPUBufferUsage.MAP_READ.');
@@ -420,6 +430,7 @@ navigator.gpu_js = (() => {
 
       unmap() {
          try {
+            VALIDATE(!this.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
             VALIDATE(this._map_ready, 'unmap() target must be presently mapped.');
 
@@ -433,7 +444,9 @@ navigator.gpu_js = (() => {
                this.buf = gl.createBuffer();
                gl.bindBuffer(this._gl_target, this.buf);
 
-               ASSERT(!gl.getError(), 'Should be no GL error.');
+               let err = gl.getError();
+               //err = gl.getError();
+               ASSERT(!err, 'Unexpected WebGL error: 0x' + err.toString(16));
                gl.bufferData(this._gl_target, this._write_map, this._gl_usage);
                if (gl.getError() == GL.OUT_OF_MEMORY)
                   throw new GPUOutOfMemoryError();
@@ -450,6 +463,7 @@ navigator.gpu_js = (() => {
 
       destroy() {
          try {
+            VALIDATE(!this.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
             VALIDATE(!this._mapped(), 'Cannot be mapped.');
             if (this.buf) {
@@ -634,6 +648,7 @@ navigator.gpu_js = (() => {
 
       createView(desc) {
          try {
+            VALIDATE(!this.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
             return new GPUTextureView_JS(this, make_GPUTextureViewDescriptor(desc));
          } catch (e) { this.device._catch(e); }
@@ -651,6 +666,7 @@ navigator.gpu_js = (() => {
 
       destroy() {
          try {
+            VALIDATE(!this.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
             const gl = this.device.gl;
             gl.deleteTexture(this.tex);
@@ -1137,6 +1153,7 @@ navigator.gpu_js = (() => {
 
       endPass() {
          try {
+            VALIDATE(!this.cmd_enc.device._is_lost, 'Device is lost.');
             if (this.cmd_enc.in_pass == this) {
                this.cmd_enc.in_pass = null;
             }
@@ -1305,6 +1322,7 @@ navigator.gpu_js = (() => {
 
       setPipeline(pipeline) {
          try {
+            VALIDATE(!this.cmd_enc.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
             this.cmd_enc._add(() => {
                this._pipeline = pipeline;
@@ -1316,6 +1334,7 @@ navigator.gpu_js = (() => {
       }
       setBlendColor(color) {
          try {
+            VALIDATE(!this.cmd_enc.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
             color = make_GPUColor(color);
             this.cmd_enc._add(() => {
@@ -1326,6 +1345,7 @@ navigator.gpu_js = (() => {
       }
       setStencilReference(ref) {
          try {
+            VALIDATE(!this.cmd_enc.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
             this.cmd_enc._add(() => {
                this._stencil_ref = ref;
@@ -1336,6 +1356,7 @@ navigator.gpu_js = (() => {
 
       setViewport(x, y, w, h, min_depth, max_depth) {
          try {
+            VALIDATE(!this.cmd_enc.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
             this.cmd_enc._add(() => {
                const gl = this.cmd_enc.device.gl;
@@ -1347,6 +1368,7 @@ navigator.gpu_js = (() => {
 
       setScissorRect(x, y, w, h) {
          try {
+            VALIDATE(!this.cmd_enc.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
             this.cmd_enc._add(() => {
                const gl = this.cmd_enc.device.gl;
@@ -1357,6 +1379,7 @@ navigator.gpu_js = (() => {
 
       setIndexBuffer(buffer, offset) {
          try {
+            VALIDATE(!this.cmd_enc.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
             this.cmd_enc._add(() => {
                const gl = this.cmd_enc.device.gl;
@@ -1368,6 +1391,7 @@ navigator.gpu_js = (() => {
       }
       setVertexBuffers(start_slot, buffers, offsets) {
          try {
+            VALIDATE(!this.cmd_enc.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
             this.cmd_enc._add(() => {
                for (let i in buffers) {
@@ -1397,6 +1421,7 @@ navigator.gpu_js = (() => {
 
       draw(vert_count, inst_count, base_vert, base_inst) {
          try {
+            VALIDATE(!this.cmd_enc.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
             VALIDATE(base_inst == 0, 'firstInstance must be 0');
             this.cmd_enc._add(() => {
@@ -1410,6 +1435,7 @@ navigator.gpu_js = (() => {
       }
       drawIndexed(index_count, inst_count, base_index, base_vert, base_inst) {
          try {
+            VALIDATE(!this.cmd_enc.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
             VALIDATE(base_inst == 0, 'firstInstance must be 0');
             this.cmd_enc._add(() => {
@@ -1426,6 +1452,7 @@ navigator.gpu_js = (() => {
 
       endPass() {
          try {
+            VALIDATE(!this.cmd_enc.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
             this.cmd_enc._add(() => {
                for (const x of this.desc.colorAttachments) {
@@ -1466,6 +1493,7 @@ navigator.gpu_js = (() => {
 
       beginRenderPass(desc) {
          try {
+            VALIDATE(!this.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
             VALIDATE(!this.in_pass, 'endPass not called.');
             VALIDATE(!this.is_finished, 'Already finished.');
@@ -1481,6 +1509,7 @@ navigator.gpu_js = (() => {
 
       finish() {
          try {
+            VALIDATE(!this.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
             VALIDATE(!this.in_pass, 'endPass not called.');
             VALIDATE(!this.is_finished, 'Already finished.');
@@ -1527,6 +1556,7 @@ navigator.gpu_js = (() => {
 
       submit(buffers) {
          try {
+            VALIDATE(!this.device._is_lost, 'Device is lost.');
             buffers.forEach(cmd_buf => {
                const cmds = cmd_buf.enc.cmds;
                cmds.forEach(x => {
@@ -1596,11 +1626,8 @@ navigator.gpu_js = (() => {
 
          this._gl = null;
          this._is_lost = false;
-         this._lost = new Promise((yes, no) => {
-            this.resolve_lost = () => {
-               this.is_lost = true;
-               yes();
-            };
+         this._lost_promise = new Promise((yes, no) => {
+            this._resolve_lost = yes;
          });
 
          this._queue = new GPUQueue_JS(this);
@@ -1610,10 +1637,21 @@ navigator.gpu_js = (() => {
       get adapter() { return this._adapter; }
       get extensions() { return this.gl_info.extensions; }
       get limits() { return this.gl_info.limits; }
-      get lost() { return this._lost; }
+      get lost() { return this._lost_promise; }
+
+      _lose_gl() {
+         const gl = this.gl;
+         const ext = gl.getExtension('WEBGL_lose_context');
+         ext.loseContext();
+         ASSERT(gl.getError() == GL.CONTEXT_LOST_WEBGL, 'First CONTEXT_LOST_WEBGL.');
+         ASSERT(!gl.getError(), 'Then NO_ERROR.');
+      }
 
       lose() {
-         this.resolve_lost();
+         console.error('GPUDevice lost!');
+         this.desc = null;
+         this._is_lost = true;
+         this._resolve_lost();
       }
 
       _ensure_gl(c) {
@@ -1641,7 +1679,12 @@ navigator.gpu_js = (() => {
             })();
             if (!this._gl) {
                this.lose();
+               return null;
             }
+            this._gl.canvas.addEventListener('webglcontextlost', (e) => {
+               e.preventDefault();
+               this.lose();
+            });
          }
          return this._gl;
       }
@@ -1654,6 +1697,7 @@ navigator.gpu_js = (() => {
 
       createBuffer(desc) {
          try {
+            VALIDATE(!this._is_lost, 'Device is lost.');
             REQUIRE_NON_NULL(desc, 'GPUBufferDescriptor');
             return new GPUBuffer_JS(this, desc, false);
          } catch (e) {
@@ -1663,6 +1707,7 @@ navigator.gpu_js = (() => {
       }
       createBufferMapped(desc) {
          try {
+            VALIDATE(!this._is_lost, 'Device is lost.');
             REQUIRE_NON_NULL(desc, 'GPUBufferDescriptor');
             const buf = new GPUBuffer_JS(this, desc, true);
             const init_map = buf._map_write();
@@ -1674,6 +1719,7 @@ navigator.gpu_js = (() => {
       }
       createBufferMappedAsync(desc) {
          try {
+            VALIDATE(!this._is_lost, 'Device is lost.');
             REQUIRE_NON_NULL(desc, 'GPUBufferDescriptor');
             const ret = this.createBufferMapped(desc);
             return new Promise((good, bad) => {
@@ -1686,6 +1732,7 @@ navigator.gpu_js = (() => {
       }
       createTexture(desc) {
          try {
+            VALIDATE(!this._is_lost, 'Device is lost.');
             REQUIRE_NON_NULL(desc, 'GPUTextureDescriptor');
             return new GPUTexture_JS(this, desc);
          } catch (e) {
@@ -1696,6 +1743,7 @@ navigator.gpu_js = (() => {
 
       createBindGroupLayout(desc) {
          try {
+            VALIDATE(!this._is_lost, 'Device is lost.');
             REQUIRE_NON_NULL(desc, 'GPUBindGroupLayoutDescriptor');
             return new GPUBindGroupLayout_JS(this, desc);
          } catch (e) {
@@ -1705,6 +1753,7 @@ navigator.gpu_js = (() => {
       }
       createPipelineLayout(desc) {
          try {
+            VALIDATE(!this._is_lost, 'Device is lost.');
             REQUIRE_NON_NULL(desc, 'GPUPipelineLayoutDescriptor');
             return new GPUPipelineLayout_JS(this, desc);
          } catch (e) {
@@ -1715,6 +1764,7 @@ navigator.gpu_js = (() => {
 
       createShaderModule(desc) {
          try {
+            VALIDATE(!this._is_lost, 'Device is lost.');
             REQUIRE_NON_NULL(desc, 'GPUShaderModuleDescriptor');
             return new GPUShaderModule_JS(this, desc);
          } catch (e) {
@@ -1724,6 +1774,7 @@ navigator.gpu_js = (() => {
       }
       createRenderPipeline(desc) {
          try {
+            VALIDATE(!this._is_lost, 'Device is lost.');
             REQUIRE_NON_NULL(desc, 'GPURenderPipelineDescriptor');
             return new GPURenderPipeline_JS(this, desc);
          } catch (e) {
@@ -1734,6 +1785,7 @@ navigator.gpu_js = (() => {
 
       createCommandEncoder(desc) {
          try {
+            VALIDATE(!this._is_lost, 'Device is lost.');
             REQUIRE_NON_NULL(desc, 'GPUCommandEncoderDescriptor');
             return new GPUCommandEncoder_JS(this, desc);
          } catch (e) {
