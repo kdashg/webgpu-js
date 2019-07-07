@@ -43,6 +43,7 @@ if (window.GPUColorWriteBits === undefined) {
 navigator.gpu_js = (() => {
    const GL = WebGL2RenderingContext;
    const ORIG_GET_CONTEXT = HTMLCanvasElement.prototype.getContext;
+   const SYNC_ERROR_DISPATCH = true;
 
    function is_subset(a, b) {
       for (const k in b) {
@@ -91,13 +92,79 @@ navigator.gpu_js = (() => {
 
    // -
 
+   const setZeroTimeout = (function() {
+     // See https://dbaron.org/log/20100309-faster-timeouts
+
+     var timeouts = [];
+     var messageName = "zero-timeout-message";
+
+     // Like setTimeout, but only takes a function argument.  There's
+     // no time argument (always zero) and no arguments (you have to
+     // use a closure).
+     function setZeroTimeout(fn) {
+         timeouts.push(fn);
+         window.postMessage(messageName, "*");
+     }
+
+     function handleMessage(event) {
+         if (event.source == window && event.data == messageName) {
+             event.stopPropagation();
+             if (timeouts.length > 0) {
+                 var fn = timeouts.shift();
+                 fn();
+             }
+         }
+     }
+
+     window.addEventListener("message", handleMessage, true);
+
+     return setZeroTimeout;
+   })();
+
+   // -
+
+   function ASSERT(val, info) {
+      if (!val) throw new Error('ASSERT: ' + info);
+   }
+
+   // -
+
+   const IS_GPU_ERROR = {};
+
+   if (window.GPUOutOfMemoryError === undefined) {
+      window.GPUOutOfMemoryError = class GPUOutOfMemoryError extends Error {
+         constructor() {
+            super('<GPUOutOfMemoryError>');
+            this.name = 'GPUOutOfMemoryError';
+         }
+      };
+      IS_GPU_ERROR['GPUOutOfMemoryError'] = true;
+   }
+   if (window.GPUValidationError === undefined) {
+      window.GPUValidationError = class GPUValidationError extends Error {
+         constructor(message) {
+            ASSERT(message, '`GPUValidationError.constructor` requires `message`.');
+            super(message);
+            this.name = 'GPUValidationError';
+         }
+      };
+      IS_GPU_ERROR['GPUValidationError'] = true;
+   }
+
+   // -
+
+   function REQUIRE_NON_NULL(desc, name) {
+      if (!desc) console.error(new TypeError(name + ' shall not be null.'));
+      if (!desc) throw new TypeError(name + ' shall not be null.');
+   }
+
    function REQUIRE(dict, type, key, val_type, fn_map) {
       const name = '`' + type + '.' + key + '`';
-      if (dict[key] === undefined) throw new Error(name + ' required.');
+      if (dict[key] === undefined) throw new ReferenceError(name + ' required.');
       if (val_type) {
          if (!(dict[key] instanceof val_type)) {
             //console.log('val_type', val_type);
-            throw new Error(name + ' must be `' + val_type.name + '`.');
+            throw new TypeError(name + ' must be `' + val_type.name + '`.');
          }
       }
       if (fn_map) {
@@ -107,15 +174,15 @@ navigator.gpu_js = (() => {
 
    function REQUIRE_SEQ(dict, type, key, val_type, fn_map) {
       const name = '`' + type + '.' + key + '`';
-      if (dict[key] === undefined) throw new Error(name + ' required.');
-      if (dict[key].length === undefined) throw new Error(name + ' must be a sequence.');
+      if (dict[key] === undefined) throw new ReferenceError(name + ' required.');
+      if (dict[key].length === undefined) throw new TypeError(name + ' must be a sequence.');
       const seq = dict[key];
       for (const i in seq) {
          const name_i = type + '.' + key + '[' + i + ']';
          if (val_type) {
             if (!(seq[i] instanceof val_type)) {
                //console.log('val_type', val_type);
-               throw new Error(name + ' must be `' + val_type.name + '`.');
+               throw new TypeError(name + ' must be `' + val_type.name + '`.');
             }
          }
          if (fn_map) {
@@ -129,15 +196,15 @@ navigator.gpu_js = (() => {
       if (dict[key] !== val) throw new Error(name + ' must be ' + val);
    }
 
-   function ASSERT(val, info) {
-      if (!val) throw new Error('ASSERT: ' + info);
+   function VALIDATE(ok, message) {
+      if (!ok) throw new GPUValidationError(message);
    }
 
    // -
 
    function make_GPUColor(dict) {
       if (dict.length) {
-         if (dict.length != 4) throw new Error('`GPUColor.length` must be 4.');
+         if (dict.length != 4) throw new TypeError('`GPUColor.length` must be 4.');
          dict = {
             r: dict[0],
             g: dict[1],
@@ -161,13 +228,13 @@ navigator.gpu_js = (() => {
       }, dict);
       Object.defineProperties(dict, {
          width: {
-            get: () => { throw new Error('No `GPUOrigin2D.width`. Did you mean `x`?'); },
+            get: () => { throw new ReferenceError('No `GPUOrigin2D.width`. Did you mean `x`?'); },
          },
          height: {
-            get: () => { throw new Error('No `GPUOrigin2D.height`. Did you mean `y`?'); },
+            get: () => { throw new ReferenceError('No `GPUOrigin2D.height`. Did you mean `y`?'); },
          },
          depth: {
-            get: () => { throw new Error('No `GPUOrigin2D.depth`.'); },
+            get: () => { throw new ReferenceError('No `GPUOrigin2D.depth`.'); },
          },
       });
       return dict;
@@ -181,13 +248,13 @@ navigator.gpu_js = (() => {
       }, dict);
       Object.defineProperties(dict, {
          width: {
-            get: () => { throw new Error('No `GPUOrigin3D.width`. Did you mean `x`?'); },
+            get: () => { throw new ReferenceError('No `GPUOrigin3D.width`. Did you mean `x`?'); },
          },
          height: {
-            get: () => { throw new Error('No `GPUOrigin3D.height`. Did you mean `y`?'); },
+            get: () => { throw new ReferenceError('No `GPUOrigin3D.height`. Did you mean `y`?'); },
          },
          depth: {
-            get: () => { throw new Error('No `GPUOrigin3D.depth`. Did you mean `z`?'); },
+            get: () => { throw new ReferenceError('No `GPUOrigin3D.depth`. Did you mean `z`?'); },
          },
       });
       return dict;
@@ -195,7 +262,7 @@ navigator.gpu_js = (() => {
 
    function make_GPUExtent3D(dict) {
       if (dict.length) {
-         if (dict.length != 3) throw new Error('`GPUExtent3D.length` must be 3.');
+         if (dict.length != 3) throw new TypeError('`GPUExtent3D.length` must be 3.');
          dict = {
             width: dict[0],
             height: dict[1],
@@ -209,13 +276,13 @@ navigator.gpu_js = (() => {
       }
       Object.defineProperties(dict, {
          x: {
-            get: () => { throw new Error('No `GPUExtent3D.x`. Did you mean `width`?'); },
+            get: () => { throw new ReferenceError('No `GPUExtent3D.x`. Did you mean `width`?'); },
          },
          y: {
-            get: () => { throw new Error('No `GPUExtent3D.y`. Did you mean `height`?'); },
+            get: () => { throw new ReferenceError('No `GPUExtent3D.y`. Did you mean `height`?'); },
          },
          z: {
-            get: () => { throw new Error('No `GPUExtent3D.z`. Did you mean `depth`?'); },
+            get: () => { throw new ReferenceError('No `GPUExtent3D.z`. Did you mean `depth`?'); },
          },
       });
       return dict;
@@ -262,9 +329,11 @@ navigator.gpu_js = (() => {
 
    class GPUBuffer_JS {
       constructor(device, desc, will_start_mapped) {
+         this.device = device;
+         if (!desc)
+            return;
          desc = make_GPUBufferDescriptor(desc);
 
-         this.device = device;
          this.desc = desc;
          this._gl_usage = infer_gl_buf_usage(desc.usage, will_start_mapped);
 
@@ -283,7 +352,12 @@ navigator.gpu_js = (() => {
             const gl = this.device.gl;
             this.buf = gl.createBuffer();
             gl.bindBuffer(this._gl_target, this.buf);
+
+            ASSERT(!gl.getError(), 'Should be no GL error.');
             gl.bufferData(this._gl_target, desc.size, this._gl_usage);
+            if (gl.getError() == GL.OUT_OF_MEMORY)
+               throw new GPUOutOfMemoryError();
+
             gl.bindBuffer(this._gl_target, null);
          }
       }
@@ -305,68 +379,85 @@ navigator.gpu_js = (() => {
       }
 
       mapWriteAsync() {
-         ASSERT(!this._mapped(), 'Cannot be mapped.');
-         ASSERT(this.desc.usage & GPUBufferUsage.MAP_WRITE, 'Missing GPUBufferUsage.MAP_WRITE.');
+         try {
+            VALIDATE(this.desc, 'Invalid object.');
+            VALIDATE(!this._mapped(), 'Cannot be mapped.');
+            VALIDATE(this.desc.usage & GPUBufferUsage.MAP_WRITE, 'Missing GPUBufferUsage.MAP_WRITE.');
 
-         const ret = this._map_write();
-         return new Promise((good, bad) => {
-            ASSERT(this._mapped() && this._map_ready, '(should be ready)');
-            good(ret);
-         });
+            const ret = this._map_write();
+            return new Promise((good, bad) => {
+               ASSERT(this._mapped() && this._map_ready, '(should be ready)');
+               good(ret);
+            });
+         } catch (e) { this.device._catch(e); }
       }
 
       mapReadAsync() {
-         ASSERT(!this._mapped(), 'Cannot be mapped.');
-         ASSERT(this.desc.usage & GPUBufferUsage.MAP_READ, 'Missing GPUBufferUsage.MAP_READ.');
-         this._read_map = this._map_buf;
+         try {
+            VALIDATE(this.desc, 'Invalid object.');
+            VALIDATE(!this._mapped(), 'Cannot be mapped.');
+            VALIDATE(this.desc.usage & GPUBufferUsage.MAP_READ, 'Missing GPUBufferUsage.MAP_READ.');
+            this._read_map = this._map_buf;
 
-         let p_good; // :p
-         const p = new Promise((good, bad) => {
-            p_good = good;
-         });
+            let p_good; // :p
+            const p = new Promise((good, bad) => {
+               p_good = good;
+            });
 
-         this.device._add_fenced_todo(() => {
-            const gl = this.device.gl;
-            gl.bindBuffer(this._gl_target, this.buf);
-            gl.getBufferSubData(this._gl_target, 0, this._read_map);
-            gl.bindBuffer(this._gl_target, null);
+            this.device._add_fenced_todo(() => {
+               const gl = this.device.gl;
+               gl.bindBuffer(this._gl_target, this.buf);
+               gl.getBufferSubData(this._gl_target, 0, this._read_map);
+               gl.bindBuffer(this._gl_target, null);
 
-            this._map_ready = true;
-            ASSERT(this._mapped() && this._map_ready, '(should be ready)');
-            p_good(this._read_map.buffer);
-         });
-         return p;
+               this._map_ready = true;
+               ASSERT(this._mapped() && this._map_ready, '(should be ready)');
+               p_good(this._read_map.buffer);
+            });
+            return p;
+         } catch (e) { this.device._catch(e); }
       }
 
       unmap() {
-         ASSERT(this._map_ready, 'unmap() target must be presently mapped.');
+         try {
+            VALIDATE(this.desc, 'Invalid object.');
+            VALIDATE(this._map_ready, 'unmap() target must be presently mapped.');
 
-         if (this._read_map) {
-            this._read_map = null;
-            return;
-         }
+            if (this._read_map) {
+               this._read_map = null;
+               return;
+            }
 
-         const gl = this.device.gl;
-         if (!this.buf) {
-            this.buf = gl.createBuffer();
-            gl.bindBuffer(this._gl_target, this.buf);
-            gl.bufferData(this._gl_target, this._write_map, this._gl_usage);
-            gl.bindBuffer(this._gl_target, null);
-         } else {
-            gl.bindBuffer(this._gl_target, this.buf);
-            gl.bufferSubData(this._gl_target, 0, this._write_map);
-            gl.bindBuffer(this._gl_target, null);
-         }
-         this._write_map = null;
+            const gl = this.device.gl;
+            if (!this.buf) {
+               this.buf = gl.createBuffer();
+               gl.bindBuffer(this._gl_target, this.buf);
+
+               ASSERT(!gl.getError(), 'Should be no GL error.');
+               gl.bufferData(this._gl_target, this._write_map, this._gl_usage);
+               if (gl.getError() == GL.OUT_OF_MEMORY)
+                  throw new GPUOutOfMemoryError();
+
+               gl.bindBuffer(this._gl_target, null);
+            } else {
+               gl.bindBuffer(this._gl_target, this.buf);
+               gl.bufferSubData(this._gl_target, 0, this._write_map);
+               gl.bindBuffer(this._gl_target, null);
+            }
+            this._write_map = null;
+         } catch (e) { this.device._catch(e); }
       }
 
       destroy() {
-         ASSERT(!this._mapped(), 'Cannot be mapped.');
-         if (this.buf) {
-            const gl = this.device.gl;
-            gl.deleteBuffer(this.buf);
-         }
-         this._map_buf = null;
+         try {
+            VALIDATE(this.desc, 'Invalid object.');
+            VALIDATE(!this._mapped(), 'Cannot be mapped.');
+            if (this.buf) {
+               const gl = this.device.gl;
+               gl.deleteBuffer(this.buf);
+            }
+            this._map_buf = null;
+         } catch (e) { this.device._catch(e); }
       }
    }
 
@@ -482,9 +573,11 @@ navigator.gpu_js = (() => {
    };
 
    class GPUTexture_JS {
-      constructor(dev, desc, swap_chain) {
+      constructor(device, desc, swap_chain) {
+         this.device = device;
+         if (!desc)
+            return;
          desc = make_GPUTextureDescriptor(desc);
-         this.device = dev;
          this.desc = desc;
          this.swap_chain = swap_chain;
 
@@ -540,20 +633,28 @@ navigator.gpu_js = (() => {
       }
 
       createView(desc) {
-         return new GPUTextureView_JS(this, make_GPUTextureViewDescriptor(desc));
+         try {
+            VALIDATE(this.desc, 'Invalid object.');
+            return new GPUTextureView_JS(this, make_GPUTextureViewDescriptor(desc));
+         } catch (e) { this.device._catch(e); }
       }
 
       createDefaultView() {
-         return this.createView({
-            format: this.desc.format,
-            dimension: this.desc.dimension,
-            aspect: 'all',
-         });
+         try {
+            return this.createView({
+               format: this.desc.format,
+               dimension: this.desc.dimension,
+               aspect: 'all',
+            });
+         } catch (e) { this.device._catch(e); }
       }
 
       destroy() {
-         const gl = this.device.gl;
-         gl.deleteTexture(this.tex);
+         try {
+            VALIDATE(this.desc, 'Invalid object.');
+            const gl = this.device.gl;
+            gl.deleteTexture(this.tex);
+         } catch (e) { this.device._catch(e); }
       }
    }
 
@@ -561,8 +662,10 @@ navigator.gpu_js = (() => {
 
    class GPUBindGroupLayout_JS {
       constructor(device, desc) {
-         desc = make_GPUBindGroupLayout(desc);
          this.device = device;
+         if (!desc)
+            return;
+         desc = make_GPUBindGroupLayout(desc);
          this.desc = desc;
       }
    }
@@ -587,8 +690,10 @@ navigator.gpu_js = (() => {
 
    class GPUPipelineLayout_JS {
       constructor(device, desc) {
-         desc = make_GPUPipelineLayoutDescriptor(desc);
          this.device = device;
+         if (!desc)
+            return;
+         desc = make_GPUPipelineLayoutDescriptor(desc);
          this.desc = desc;
       }
    }
@@ -603,49 +708,45 @@ navigator.gpu_js = (() => {
    // -
 
    const PRIM_TOPO = {
-    'point-list'    : GL.POINTS,
-    'line-list'     : GL.LINES,
-    'line-strip'    : GL.LINE_STRIP,
-    'triangle-list' : GL.TRIANGLES,
-    'triangle-strip': GL.TRIANGLE_STRIP,
+      'point-list'    : GL.POINTS,
+      'line-list'     : GL.LINES,
+      'line-strip'    : GL.LINE_STRIP,
+      'triangle-list' : GL.TRIANGLES,
+      'triangle-strip': GL.TRIANGLE_STRIP,
    };
 
    const VERTEX_FORMAT = {
-      uchar2     : {size: 2, type: GL.UNSIGNED_BYTE , norm: false},
-      uchar4     : {size: 4, type: GL.UNSIGNED_BYTE , norm: false},
-       char2     : {size: 2, type: GL.BYTE          , norm: false},
-       char4     : {size: 4, type: GL.BYTE          , norm: false},
-      uchar2norm : {size: 2, type: GL.UNSIGNED_BYTE , norm: true },
-      uchar4norm : {size: 4, type: GL.UNSIGNED_BYTE , norm: true },
-       char2norm : {size: 2, type: GL.BYTE          , norm: true },
-       char4norm : {size: 4, type: GL.BYTE          , norm: true },
-      ushort2    : {size: 2, type: GL.UNSIGNED_SHORT, norm: false},
-      ushort4    : {size: 4, type: GL.UNSIGNED_SHORT, norm: false},
-       short2    : {size: 2, type: GL.SHORT         , norm: false},
-       short4    : {size: 4, type: GL.SHORT         , norm: false},
-      ushort2norm: {size: 2, type: GL.UNSIGNED_SHORT, norm: true },
-      ushort4norm: {size: 4, type: GL.UNSIGNED_SHORT, norm: true },
-       short2norm: {size: 2, type: GL.SHORT         , norm: true },
-       short4norm: {size: 4, type: GL.SHORT         , norm: true },
-      half2      : {size: 2, type: GL.HALF_FLOAT    , norm: false},
-      half4      : {size: 4, type: GL.HALF_FLOAT    , norm: false},
-      float      : {size: 1, type: GL.FLOAT         , norm: false},
-      float2     : {size: 2, type: GL.FLOAT         , norm: false},
-      float3     : {size: 3, type: GL.FLOAT         , norm: false},
-      float4     : {size: 4, type: GL.FLOAT         , norm: false},
-      uint       : {size: 1, type: GL.UNSIGNED_INT  , norm: false},
-      uint2      : {size: 2, type: GL.UNSIGNED_INT  , norm: false},
-      uint3      : {size: 3, type: GL.UNSIGNED_INT  , norm: false},
-      uint4      : {size: 4, type: GL.UNSIGNED_INT  , norm: false},
-       int       : {size: 1, type: GL.INT           , norm: false},
-       int2      : {size: 2, type: GL.INT           , norm: false},
-       int3      : {size: 3, type: GL.INT           , norm: false},
-       int4      : {size: 4, type: GL.INT           , norm: false},
+      uchar2     : {channels: 2, size: 1*2, type: GL.UNSIGNED_BYTE , norm: false, float: false},
+      uchar4     : {channels: 4, size: 1*4, type: GL.UNSIGNED_BYTE , norm: false, float: false},
+       char2     : {channels: 2, size: 1*2, type: GL.BYTE          , norm: false, float: false},
+       char4     : {channels: 4, size: 1*4, type: GL.BYTE          , norm: false, float: false},
+      uchar2norm : {channels: 2, size: 1*2, type: GL.UNSIGNED_BYTE , norm: true , float: true },
+      uchar4norm : {channels: 4, size: 1*4, type: GL.UNSIGNED_BYTE , norm: true , float: true },
+       char2norm : {channels: 2, size: 1*2, type: GL.BYTE          , norm: true , float: true },
+       char4norm : {channels: 4, size: 1*4, type: GL.BYTE          , norm: true , float: true },
+      ushort2    : {channels: 2, size: 2*2, type: GL.UNSIGNED_SHORT, norm: false, float: false},
+      ushort4    : {channels: 4, size: 2*4, type: GL.UNSIGNED_SHORT, norm: false, float: false},
+       short2    : {channels: 2, size: 2*2, type: GL.SHORT         , norm: false, float: false},
+       short4    : {channels: 4, size: 2*4, type: GL.SHORT         , norm: false, float: false},
+      ushort2norm: {channels: 2, size: 2*2, type: GL.UNSIGNED_SHORT, norm: true , float: true },
+      ushort4norm: {channels: 4, size: 2*4, type: GL.UNSIGNED_SHORT, norm: true , float: true },
+       short2norm: {channels: 2, size: 2*2, type: GL.SHORT         , norm: true , float: true },
+       short4norm: {channels: 4, size: 2*4, type: GL.SHORT         , norm: true , float: true },
+      half2      : {channels: 2, size: 2*2, type: GL.HALF_FLOAT    , norm: false, float: true },
+      half4      : {channels: 4, size: 2*4, type: GL.HALF_FLOAT    , norm: false, float: true },
+      float      : {channels: 1, size: 4*1, type: GL.FLOAT         , norm: false, float: true },
+      float2     : {channels: 2, size: 4*2, type: GL.FLOAT         , norm: false, float: true },
+      float3     : {channels: 3, size: 4*3, type: GL.FLOAT         , norm: false, float: true },
+      float4     : {channels: 4, size: 4*4, type: GL.FLOAT         , norm: false, float: true },
+      uint       : {channels: 1, size: 4*1, type: GL.UNSIGNED_INT  , norm: false, float: false},
+      uint2      : {channels: 2, size: 4*2, type: GL.UNSIGNED_INT  , norm: false, float: false},
+      uint3      : {channels: 3, size: 4*3, type: GL.UNSIGNED_INT  , norm: false, float: false},
+      uint4      : {channels: 4, size: 4*4, type: GL.UNSIGNED_INT  , norm: false, float: false},
+       int       : {channels: 1, size: 4*1, type: GL.INT           , norm: false, float: false},
+       int2      : {channels: 2, size: 4*2, type: GL.INT           , norm: false, float: false},
+       int3      : {channels: 3, size: 4*3, type: GL.INT           , norm: false, float: false},
+       int4      : {channels: 4, size: 4*4, type: GL.INT           , norm: false, float: false},
    };
-
-   function is_floatish(type, normalized) {
-      return (type == GL.FLOAT || type == GL.HALF_FLOAT || normalized);
-   }
 
    const BLEND_EQUATION = {
       'add'             : GL.FUNC_ADD,
@@ -691,9 +792,10 @@ navigator.gpu_js = (() => {
 
    class GPURenderPipeline_JS {
       constructor(device, desc) {
-         desc = make_GPURenderPipelineDescriptor(desc);
-
          this.device = device;
+         if (!desc)
+            return;
+         desc = make_GPURenderPipelineDescriptor(desc);
          this.desc = desc;
 
          const gl = this.device.gl;
@@ -709,16 +811,15 @@ navigator.gpu_js = (() => {
                gl.vertexAttribDivisor(attrib.shaderLocation, instance_divisor);
                const format = VERTEX_FORMAT[attrib.format];
 
-               const floatish = is_floatish(format.type, format.norm);
                attrib.set_buf_offset = (gpu_buf, buf_offset) => {
                   const gl_buf = gpu_buf ? gpu_buf.buf : null;
                   gl.bindBuffer(GL.ARRAY_BUFFER, gl_buf);
-                  if (floatish) {
-                     gl.vertexAttribPointer(attrib.shaderLocation, format.size, format.type,
+                  if (format.float) {
+                     gl.vertexAttribPointer(attrib.shaderLocation, format.channels, format.type,
                                             format.norm, buff_desc.stride,
                                             buf_offset + attrib.offset);
                   } else {
-                     gl.vertexAttribIPointer(attrib.shaderLocation, format.size, format.type,
+                     gl.vertexAttribIPointer(attrib.shaderLocation, format.channels, format.type,
                                              buff_desc.stride,
                                              buf_offset + attrib.offset);
                   }
@@ -868,7 +969,7 @@ navigator.gpu_js = (() => {
                                ds_desc.stencilBack.compare == 'always' &&
                                !ds_desc.stencilWriteMask);
 
-               ASSERT(ds_attach_desc, 'Pipeline has depth-stencil but render-pass does not.');
+               VALIDATE(ds_attach_desc, 'Pipeline has depth-stencil but render-pass does not.');
                ds_attach_desc._load_op();
             }
 
@@ -1035,9 +1136,11 @@ navigator.gpu_js = (() => {
       }
 
       endPass() {
-         if (this.cmd_enc.in_pass == this) {
-            this.cmd_enc.in_pass = null;
-         }
+         try {
+            if (this.cmd_enc.in_pass == this) {
+               this.cmd_enc.in_pass = null;
+            }
+         } catch (e) { this.cmd_enc.device._catch(e); }
       }
    }
 
@@ -1083,9 +1186,11 @@ navigator.gpu_js = (() => {
 
    class GPURenderPassEncoder_JS extends GPUProgrammablePassEncoder_JS {
       constructor(cmd_enc, desc) {
-         desc =  make_GPURenderPassDescriptor(desc);
-
          super(cmd_enc);
+         this.cmd_enc = cmd_enc;
+         if (!desc)
+            return;
+         desc =  make_GPURenderPassDescriptor(desc);
          this.desc = desc;
 
          const device = cmd_enc.device;
@@ -1199,59 +1304,80 @@ navigator.gpu_js = (() => {
       }
 
       setPipeline(pipeline) {
-         this.cmd_enc._add(() => {
-            this._pipeline = pipeline;
-            this._pipeline_ready = false;
-            this._vert_bufs_ready = false;
-            this._stencil_ref_ready = false;
-         });
+         try {
+            VALIDATE(this.desc, 'Invalid object.');
+            this.cmd_enc._add(() => {
+               this._pipeline = pipeline;
+               this._pipeline_ready = false;
+               this._vert_bufs_ready = false;
+               this._stencil_ref_ready = false;
+            });
+         } catch (e) { this.cmd_enc.device._catch(e); }
       }
       setBlendColor(color) {
-         color = make_GPUColor(color);
-         this.cmd_enc._add(() => {
-            const gl = this.cmd_enc.device.gl;
-            gl.blendColor(color.r, color.g, color.b, color.a);
-         });
+         try {
+            VALIDATE(this.desc, 'Invalid object.');
+            color = make_GPUColor(color);
+            this.cmd_enc._add(() => {
+               const gl = this.cmd_enc.device.gl;
+               gl.blendColor(color.r, color.g, color.b, color.a);
+            });
+         } catch (e) { this.cmd_enc.device._catch(e); }
       }
       setStencilReference(ref) {
-         this.cmd_enc._add(() => {
-            this._stencil_ref = ref;
-            this._stencil_ref_ready = false;
-         });
+         try {
+            VALIDATE(this.desc, 'Invalid object.');
+            this.cmd_enc._add(() => {
+               this._stencil_ref = ref;
+               this._stencil_ref_ready = false;
+            });
+         } catch (e) { this.cmd_enc.device._catch(e); }
       }
 
       setViewport(x, y, w, h, min_depth, max_depth) {
-         this.cmd_enc._add(() => {
-            const gl = this.cmd_enc.device.gl;
-            gl.viewport(x, y, w, h);
-            gl.depthRange(min_depth, max_depth);
-         });
+         try {
+            VALIDATE(this.desc, 'Invalid object.');
+            this.cmd_enc._add(() => {
+               const gl = this.cmd_enc.device.gl;
+               gl.viewport(x, y, w, h);
+               gl.depthRange(min_depth, max_depth);
+            });
+         } catch (e) { this.cmd_enc.device._catch(e); }
       }
 
       setScissorRect(x, y, w, h) {
-         this.cmd_enc._add(() => {
-            const gl = this.cmd_enc.device.gl;
-            gl.scissor(x, y, w, h);
-         });
+         try {
+            VALIDATE(this.desc, 'Invalid object.');
+            this.cmd_enc._add(() => {
+               const gl = this.cmd_enc.device.gl;
+               gl.scissor(x, y, w, h);
+            });
+         } catch (e) { this.cmd_enc.device._catch(e); }
       }
 
       setIndexBuffer(buffer, offset) {
-         this.cmd_enc._add(() => {
-            const gl = this.cmd_enc.device.gl;
-            const gl_buf = buffer ? buffer.buf : null;
-            gl.bindBuffer(GL.ELEMENT_ARRAY_BUFFER, gl_buf);
-            this._index_buf_offset = offset;
-         });
+         try {
+            VALIDATE(this.desc, 'Invalid object.');
+            this.cmd_enc._add(() => {
+               const gl = this.cmd_enc.device.gl;
+               const gl_buf = buffer ? buffer.buf : null;
+               gl.bindBuffer(GL.ELEMENT_ARRAY_BUFFER, gl_buf);
+               this._index_buf_offset = offset;
+            });
+         } catch (e) { this.cmd_enc.device._catch(e); }
       }
       setVertexBuffers(start_slot, buffers, offsets) {
-         this.cmd_enc._add(() => {
-            for (let i in buffers) {
-               i |= 0; // Arr ids are strings! 0 + '0' is '00'!
-               const slot = start_slot + i;
-               this._vert_buf_list[slot] = [buffers[i], offsets[i]];
-            }
-            this._vert_bufs_ready = false;
-         });
+         try {
+            VALIDATE(this.desc, 'Invalid object.');
+            this.cmd_enc._add(() => {
+               for (let i in buffers) {
+                  i |= 0; // Arr ids are strings! 0 + '0' is '00'!
+                  const slot = start_slot + i;
+                  this._vert_buf_list[slot] = [buffers[i], offsets[i]];
+               }
+               this._vert_bufs_ready = false;
+            });
+         } catch (e) { this.cmd_enc.device._catch(e); }
       }
 
       _pre_draw() {
@@ -1270,35 +1396,44 @@ navigator.gpu_js = (() => {
       }
 
       draw(vert_count, inst_count, base_vert, base_inst) {
-         ASSERT(base_inst == 0, 'firstInstance must be 0');
-         this.cmd_enc._add(() => {
-            this._pre_draw();
+         try {
+            VALIDATE(this.desc, 'Invalid object.');
+            VALIDATE(base_inst == 0, 'firstInstance must be 0');
+            this.cmd_enc._add(() => {
+               this._pre_draw();
 
-            const gl = this.cmd_enc.device.gl;
-            const prim_topo = PRIM_TOPO[this._pipeline.desc.primitiveTopology];
-            gl.drawArraysInstanced(prim_topo, base_vert, vert_count, inst_count);
-         });
+               const gl = this.cmd_enc.device.gl;
+               const prim_topo = PRIM_TOPO[this._pipeline.desc.primitiveTopology];
+               gl.drawArraysInstanced(prim_topo, base_vert, vert_count, inst_count);
+            });
+         } catch (e) { this.cmd_enc.device._catch(e); }
       }
       drawIndexed(index_count, inst_count, base_index, base_vert, base_inst) {
-         ASSERT(base_inst == 0, 'firstInstance must be 0');
-         this.cmd_enc._add(() => {
-            this._pre_draw();
+         try {
+            VALIDATE(this.desc, 'Invalid object.');
+            VALIDATE(base_inst == 0, 'firstInstance must be 0');
+            this.cmd_enc._add(() => {
+               this._pre_draw();
 
-            const gl = this.cmd_enc.device.gl;
-            const prim_topo = PRIM_TOPO[this._pipeline.desc.primitiveTopology];
-            const format = INDEX_FORMAT[this._pipeline.desc.vertexInput.indexFormat];
-            const offset = this._index_buf_offset + base_index * format.size;
-            gl.drawElementsInstanced(prim_topo, index_count, format.type, offset, inst_count);
-         });
+               const gl = this.cmd_enc.device.gl;
+               const prim_topo = PRIM_TOPO[this._pipeline.desc.primitiveTopology];
+               const format = INDEX_FORMAT[this._pipeline.desc.vertexInput.indexFormat];
+               const offset = this._index_buf_offset + base_index * format.size;
+               gl.drawElementsInstanced(prim_topo, index_count, format.type, offset, inst_count);
+            });
+         } catch (e) { this.cmd_enc.device._catch(e); }
       }
 
       endPass() {
-         this.cmd_enc._add(() => {
-            for (const x of this.desc.colorAttachments) {
-               x._load_op();
-            }
-         });
-         super.endPass();
+         try {
+            VALIDATE(this.desc, 'Invalid object.');
+            this.cmd_enc._add(() => {
+               for (const x of this.desc.colorAttachments) {
+                  x._load_op();
+               }
+            });
+            super.endPass();
+         } catch (e) { this.cmd_enc.device._catch(e); }
       }
    }
 
@@ -1306,22 +1441,23 @@ navigator.gpu_js = (() => {
 
 
    class GPUCommandBuffer_JS {
-      constructor(enc) {
+      constructor(device, enc) {
+         this.device = device;
          this.enc = enc;
       }
    }
 
    class GPUCommandEncoder_JS {
-      constructor(device) {
+      constructor(device, desc) {
          this.device = device;
+         if (!desc)
+            return;
+         desc = make_GPUCommandEncoderDescriptor(desc);
+         this.desc = desc;
+
          this.in_pass = null;
          this.is_finished = false;
          this.cmds = [];
-      }
-
-      _assert() {
-         if (this.in_pass) throw new Error('in_pass');
-         if (this.is_finished) throw new Error('is_finished');
       }
 
       _add(fn_cmd) {
@@ -1329,17 +1465,38 @@ navigator.gpu_js = (() => {
       }
 
       beginRenderPass(desc) {
-         this._assert();
-         const ret = new GPURenderPassEncoder_JS(this, desc);
-         this.in_pass = ret;
-         return ret;
+         try {
+            VALIDATE(this.desc, 'Invalid object.');
+            VALIDATE(!this.in_pass, 'endPass not called.');
+            VALIDATE(!this.is_finished, 'Already finished.');
+            REQUIRE_NON_NULL(desc, 'GPURenderPassDescriptor');
+            const ret = new GPURenderPassEncoder_JS(this, desc);
+            this.in_pass = ret;
+            return ret;
+         } catch (e) {
+            this.device._catch(e);
+            return new GPURenderPassEncoder_JS(this, null);
+         }
       }
 
       finish() {
-         this._assert();
-         this.is_finished = true;
-         return new GPUCommandBuffer_JS(this);
+         try {
+            VALIDATE(this.desc, 'Invalid object.');
+            VALIDATE(!this.in_pass, 'endPass not called.');
+            VALIDATE(!this.is_finished, 'Already finished.');
+            this.is_finished = true;
+            return new GPUCommandBuffer_JS(this.device, this);
+         } catch (e) {
+            this.device._catch(e);
+            return new GPUCommandBuffer_JS(this.device, null);
+         }
       }
+   }
+
+   function make_GPUCommandEncoderDescriptor(desc) {
+      desc = Object.assign({
+      }, desc);
+      return desc;
    }
 
    // -
@@ -1353,9 +1510,10 @@ navigator.gpu_js = (() => {
 
    class GPUShaderModule_JS {
       constructor(device, desc) {
-         desc = make_GPUShaderModuleDescriptor(desc);
-
          this.device = device;
+         if (!desc)
+            return;
+         desc = make_GPUShaderModuleDescriptor(desc);
          this.desc = desc;
       }
    }
@@ -1368,12 +1526,14 @@ navigator.gpu_js = (() => {
       }
 
       submit(buffers) {
-         buffers.forEach(cmd_buf => {
-            const cmds = cmd_buf.enc.cmds;
-            cmds.forEach(x => {
-               x();
-            })
-         });
+         try {
+            buffers.forEach(cmd_buf => {
+               const cmds = cmd_buf.enc.cmds;
+               cmds.forEach(x => {
+                  x();
+               })
+            });
+         } catch (e) { this.device._catch(e); }
       }
    }
 
@@ -1404,10 +1564,38 @@ navigator.gpu_js = (() => {
       get message() { return this._message; }
    }
 
-   class GPUDevice_JS {
-      constructor() {
+   const FILTER_TYPE = {
+      'out-of-memory': 'GPUOutOfMemoryError',
+      'validation'   : 'GPUValidationError',
+   };
+
+   if (window.GPUUncapturedErrorEvent === undefined) {
+      window.GPUUncapturedErrorEvent = class GPUUncapturedErrorEvent extends Event {
+         constructor(type_str, init_dict) {
+            super(type_str, init_dict);
+            ASSERT(init_dict.error, '`GPUUncapturedErrorEventInit.error` required.');
+            this._error = init_dict.error;
+         }
+
+         get error() {
+            return this._error;
+         }
+
+         toString() {
+            return 'GPUUncapturedErrorEvent: ' + this.error.toString();
+         }
+      };
+   }
+
+   class GPUDevice_JS extends EventTarget {
+      constructor(adapter, desc) {
+         super();
+         this._adapter = adapter;
+         desc = make_GPUDeviceDescriptor(desc);
+         this.desc = desc;
+
          this._gl = null;
-         this.is_lost = false;
+         this._is_lost = false;
          this._lost = new Promise((yes, no) => {
             this.resolve_lost = () => {
                this.is_lost = true;
@@ -1416,6 +1604,7 @@ navigator.gpu_js = (() => {
          });
 
          this._queue = new GPUQueue_JS(this);
+         this._error_scopes = [];
       }
 
       get adapter() { return this._adapter; }
@@ -1464,65 +1653,167 @@ navigator.gpu_js = (() => {
       // -
 
       createBuffer(desc) {
-         return new GPUBuffer_JS(this, desc, false);
+         try {
+            REQUIRE_NON_NULL(desc, 'GPUBufferDescriptor');
+            return new GPUBuffer_JS(this, desc, false);
+         } catch (e) {
+            this._catch(e);
+            return new GPUBuffer_JS(this, null);
+         }
       }
       createBufferMapped(desc) {
-         const buf = new GPUBuffer_JS(this, desc, true);
-         const init_map = buf._map_write();
-         return [buf, init_map];
+         try {
+            REQUIRE_NON_NULL(desc, 'GPUBufferDescriptor');
+            const buf = new GPUBuffer_JS(this, desc, true);
+            const init_map = buf._map_write();
+            return [buf, init_map];
+         } catch (e) {
+            this._catch(e);
+            return new GPUBuffer_JS(this, null);
+         }
       }
       createBufferMappedAsync(desc) {
-         const ret = this.createBufferMapped(desc);
-         return new Promise((good, bad) => {
-            good(ret);
-         });
+         try {
+            REQUIRE_NON_NULL(desc, 'GPUBufferDescriptor');
+            const ret = this.createBufferMapped(desc);
+            return new Promise((good, bad) => {
+               good(ret);
+            });
+         } catch (e) {
+            this._catch(e);
+            return new GPUBuffer_JS(this, null);
+         }
       }
       createTexture(desc) {
-         return new GPUTexture_JS(this, desc);
+         try {
+            REQUIRE_NON_NULL(desc, 'GPUTextureDescriptor');
+            return new GPUTexture_JS(this, desc);
+         } catch (e) {
+            this._catch(e);
+            return new GPUTexture_JS(this, null);
+         }
       }
 
       createBindGroupLayout(desc) {
-         return new GPUBindGroupLayout_JS(this, desc);
+         try {
+            REQUIRE_NON_NULL(desc, 'GPUBindGroupLayoutDescriptor');
+            return new GPUBindGroupLayout_JS(this, desc);
+         } catch (e) {
+            this._catch(e);
+            return new GPUBindGroupLayout_JS(this, null);
+         }
       }
       createPipelineLayout(desc) {
-         return new GPUPipelineLayout_JS(this, desc);
+         try {
+            REQUIRE_NON_NULL(desc, 'GPUPipelineLayoutDescriptor');
+            return new GPUPipelineLayout_JS(this, desc);
+         } catch (e) {
+            this._catch(e);
+            return new GPUPipelineLayout_JS(this, null);
+         }
       }
 
       createShaderModule(desc) {
-         return new GPUShaderModule_JS(this, desc);
+         try {
+            REQUIRE_NON_NULL(desc, 'GPUShaderModuleDescriptor');
+            return new GPUShaderModule_JS(this, desc);
+         } catch (e) {
+            this._catch(e);
+            return new GPUShaderModule_JS(this, null);
+         }
       }
       createRenderPipeline(desc) {
-         return new GPURenderPipeline_JS(this, desc);
+         try {
+            REQUIRE_NON_NULL(desc, 'GPURenderPipelineDescriptor');
+            return new GPURenderPipeline_JS(this, desc);
+         } catch (e) {
+            this._catch(e);
+            return new GPURenderPipeline_JS(this, null);
+         }
       }
 
       createCommandEncoder(desc) {
-         return new GPUCommandEncoder_JS(this, desc);
+         try {
+            REQUIRE_NON_NULL(desc, 'GPUCommandEncoderDescriptor');
+            return new GPUCommandEncoder_JS(this, desc);
+         } catch (e) {
+            this._catch(e);
+            return new GPUCommandEncoder_JS(this, null);
+         }
       }
 
       getQueue() {
          return this._queue;
       }
+
+      // -
+
+      pushErrorScope(filter) {
+         const new_scope = {
+            filter: FILTER_TYPE[filter],
+            error: null,
+         };
+         this._error_scopes.unshift(new_scope);
+      }
+
+      popErrorScope() {
+         return new Promise((good, bad) => {
+            if (this._is_lost)
+               return bad('Device lost.');
+            if (!this._error_scopes.length)
+               return bad('Error scope stack is empty.');
+            const popped = this._error_scopes.shift();
+            if (!popped.error)
+               return bad('Top of stack has no error.');
+            good(popped.error);
+         });
+      }
+
+      _catch(error) {
+         if (!IS_GPU_ERROR[error.name]) throw error;
+
+         for (const scope of this._error_scopes) {
+            if (error.name != scope.filter)
+               continue;
+
+            if (!scope.error) { // Only capture the first.
+               scope.error = error;
+            }
+            return;
+         }
+
+         const dispatch = () => {
+            const event = new GPUUncapturedErrorEvent('uncapturederror', {
+               error: error,
+            });
+            if (this.dispatchEvent(event)) {
+               console.error(error.toString());
+            }
+         }
+         if (SYNC_ERROR_DISPATCH) {
+            dispatch();
+         } else {
+            setZeroTimeout(dispatch); // Dispatch async
+         }
+      }
    }
 
 
-   class GPUApapter_JS {
+   class GPUAdapter_JS {
       constructor() {}
 
       get name() { return this.last_info.name; }
       get extensions() { return this.last_info.extensions; }
 
       requestDevice(desc) {
-         desc = make_GPUDeviceDescriptor(desc);
          return new Promise((yes, no) => {
-            if (!is_subset(desc.extensions, this.last_info.extensions))
+            const ret = new GPUDevice_JS(this, desc);
+            if (!is_subset(ret.desc.extensions, this.last_info.extensions))
                return no('`extensions` not a subset of adapters\'.');
 
-            if (!is_subset(desc.limits, this.last_info.limits))
+            if (!is_subset(ret.desc.limits, this.last_info.limits))
                return no('`limits` not a subset of adapters\'.');
 
-            const ret = new GPUDevice_JS();
-            ret._adapter = this;
-            ret.gl_info = this.last_info;
             yes(ret);
          });
       }
@@ -1553,7 +1844,7 @@ navigator.gpu_js = (() => {
          }
 
          return new Promise((yes, no) => {
-            const ret = new GPUApapter_JS();
+            const ret = new GPUAdapter_JS();
             ret.desc = desc;
             const gl = ret.make_gl();
             if (!gl)
