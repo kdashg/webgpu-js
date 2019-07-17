@@ -1,21 +1,21 @@
 if (window.GPUBufferUsage === undefined) {
    GPUBufferUsage = {
-      NONE         : 0x0000,
-      MAP_READ     : 0x0001,
-      MAP_WRITE    : 0x0002,
-      TRANSFER_SRC : 0x0004,
-      TRANSFER_DST : 0x0008,
-      INDEX        : 0x0010,
-      VERTEX       : 0x0020,
-      UNIFORM      : 0x0040,
-      STORAGE      : 0x0080,
+      NONE     : 0x0000,
+      MAP_READ : 0x0001,
+      MAP_WRITE: 0x0002,
+      COPY_SRC : 0x0004,
+      COPY_DST : 0x0008,
+      INDEX    : 0x0010,
+      VERTEX   : 0x0020,
+      UNIFORM  : 0x0040,
+      STORAGE  : 0x0080,
    };
 }
 if (window.GPUTextureUsage === undefined) {
    GPUTextureUsage = {
       NONE              : 0x00,
-      TRANSFER_SRC      : 0x01,
-      TRANSFER_DST      : 0x02,
+      COPY_SRC          : 0x01,
+      COPY_DST          : 0x02,
       SAMPLED           : 0x04,
       STORAGE           : 0x08,
       OUTPUT_ATTACHMENT : 0x10,
@@ -352,8 +352,8 @@ navigator.gpu_js = (() => {
 
          if (!will_start_mapped) {
             const gl = this.device.gl;
-            this.buf = gl.createBuffer();
-            gl.bindBuffer(this._gl_target, this.buf);
+            this._gl_obj = gl.createBuffer();
+            gl.bindBuffer(this._gl_target, this._gl_obj);
 
             let err = gl.getError();
             ASSERT(!err, 'Unexpected WebGL error: 0x' + err.toString(16));
@@ -416,7 +416,7 @@ navigator.gpu_js = (() => {
 
             this.device._add_fenced_todo(() => {
                const gl = this.device.gl;
-               gl.bindBuffer(this._gl_target, this.buf);
+               gl.bindBuffer(this._gl_target, this._gl_obj);
                gl.getBufferSubData(this._gl_target, 0, this._read_map);
                gl.bindBuffer(this._gl_target, null);
 
@@ -440,12 +440,11 @@ navigator.gpu_js = (() => {
             }
 
             const gl = this.device.gl;
-            if (!this.buf) {
-               this.buf = gl.createBuffer();
-               gl.bindBuffer(this._gl_target, this.buf);
+            if (!this._gl_obj) {
+               this._gl_obj = gl.createBuffer();
+               gl.bindBuffer(this._gl_target, this._gl_obj);
 
                let err = gl.getError();
-               //err = gl.getError();
                ASSERT(!err, 'Unexpected WebGL error: 0x' + err.toString(16));
                gl.bufferData(this._gl_target, this._write_map, this._gl_usage);
                if (gl.getError() == GL.OUT_OF_MEMORY)
@@ -453,7 +452,7 @@ navigator.gpu_js = (() => {
 
                gl.bindBuffer(this._gl_target, null);
             } else {
-               gl.bindBuffer(this._gl_target, this.buf);
+               gl.bindBuffer(this._gl_target, this._gl_obj);
                gl.bufferSubData(this._gl_target, 0, this._write_map);
                gl.bindBuffer(this._gl_target, null);
             }
@@ -466,9 +465,9 @@ navigator.gpu_js = (() => {
             VALIDATE(!this.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
             VALIDATE(!this._mapped(), 'Cannot be mapped.');
-            if (this.buf) {
+            if (this._gl_obj) {
                const gl = this.device.gl;
-               gl.deleteBuffer(this.buf);
+               gl.deleteBuffer(this._gl_obj);
             }
             this._map_buf = null;
          } catch (e) { this.device._catch(e); }
@@ -486,6 +485,78 @@ navigator.gpu_js = (() => {
 
    // -----------------
 
+   function make_GPUSamplerDescriptor(desc) {
+      desc = Object.assign({
+         addressModeU: 'clamp-to-edge',
+         addressModeV: 'clamp-to-edge',
+         addressModeW: 'clamp-to-edge',
+         magFilter: 'nearest',
+         minFilter: 'nearest',
+         mipmapFilter: 'nearest',
+         lodMinClamp: 0,
+         lodMaxClamp: 0xffffffff,
+         compare: 'never',
+      }, desc);
+      return desc;
+   }
+
+   const WRAP_MODE = {
+      'clamp-to-edge': GL.CLAMP_TO_EDGE,
+      'repeat': GL.REPEAT,
+      'mirror-repeat': GL.MIRROR,
+   };
+
+   const FILTER_MODE = {
+      nearest: GL.NEAREST,
+      linear: GL.LINEAR,
+   };
+   const FILTER_MODE_KEY = {
+      nearest: 'NEAREST',
+      linear: 'LINEAR',
+   };
+
+   class GPUSampler_JS {
+      constructor(device, desc) {
+         this.device = device;
+         if (!desc)
+            return;
+         desc = make_GPUSamplerDescriptor(desc);
+         this.desc = desc;
+
+         const gl = this.device.gl;
+         this._gl_obj = gl.createSampler();
+
+         const param = (name, map, pname) => {
+            ASSERT(pname, 'pname');
+            const val = desc[name];
+            const mapped = map[val];
+            VALIDATE(mapped, name + ' invalid: ' + val);
+            gl.samplerParameteri(this._gl_obj, pname, mapped);
+         };
+         param('addressModeU', WRAP_MODE, GL.TEXTURE_WRAP_S);
+         param('addressModeV', WRAP_MODE, GL.TEXTURE_WRAP_T);
+         param('addressModeW', WRAP_MODE, GL.TEXTURE_WRAP_R);
+         param('magFilter', FILTER_MODE, GL.TEXTURE_MAG_FILTER);
+
+         const min = FILTER_MODE_KEY[desc.minFilter];
+         const mipmap = FILTER_MODE_KEY[desc.mipmapFilter];
+         VALIDATE(min, 'minFilter invalid: ' + min);
+         VALIDATE(mipmap, 'mipmapFilter invalid: ' + mipmap);
+         const key = min + '_MIPMAP_' + mipmap;
+         gl.samplerParameteri(this._gl_obj, GL.TEXTURE_MIN_FILTER, GL[key]);
+
+         gl.samplerParameterf(this._gl_obj, GL.TEXTURE_MIN_LOD, desc.lodMinClamp);
+         gl.samplerParameterf(this._gl_obj, GL.TEXTURE_MAX_LOD, desc.lodMaxClamp);
+
+         if (desc.compare != 'never') {
+            param('compare', COMPARE_FUNC, GL.TEXTURE_COMPARE_FUNC);
+            gl.samplerParameteri(this._gl_obj, GL.TEXTURE_COMPARE_MODE, GL.COMPARE_REF_TO_TEXTURE);
+         }
+      }
+   }
+
+   // -------
+
    function make_GPUTextureViewDescriptor(desc) {
       desc = Object.assign({
          baseMipLevel: 0,
@@ -499,14 +570,37 @@ navigator.gpu_js = (() => {
       return desc;
    }
 
+   const TEX_TARGET_BY_VIEW_DIM = {
+      '1d': GL.TEXTURE_2D,
+      '2d': GL.TEXTURE_2D,
+      '2d-array': GL.TEXTURE_2D_ARRAY,
+      'cube': GL.TEXTURE_CUBE_MAP,
+      //'cube-array': GL.TEXTURE_2D_ARRAY,
+      '3d': GL.TEXTURE_3D,
+   };
+
    class GPUTextureView_JS {
       constructor(tex, desc) {
          this.tex = tex;
+         if (!desc)
+            return;
+         desc = make_GPUTextureViewDescriptor(desc);
          this.desc = desc;
+         ASSERT(desc.baseArrayLayer == 0, 'Not supported: baseArrayLayer > 0');
+         ASSERT(desc.arrayLayerCount == tex.desc.arrayLayerCount,
+                'Not supported: GPUTextureViewDescriptor.arrayLayerCount != GPUTextureDescriptor.arrayLayerCount');
+      }
+
+      _bind_texture() {
+         const gl = this.tex.device.gl;
+         const gl_obj = this.tex._ensure_tex(this.desc.dimension);
+         gl.bindTexture(gl_obj.target, gl_obj);
+         gl.texParameteri(gl_obj.target, GL.TEXTURE_BASE_LEVEL, this.desc.baseMipLevel);
+         gl.texParameteri(gl_obj.target, GL.TEXTURE_MAX_LEVEL, this.desc.baseMipLevel + this.desc.mipLevelCount);
       }
    }
 
-   // -
+   // -----
 
    function make_GPUTextureDescriptor(desc) {
       desc = Object.assign({
@@ -522,69 +616,101 @@ navigator.gpu_js = (() => {
       return desc;
    }
 
-   const GL_TEX_FORMAT = {
+   const TEX_FORMAT_INFO = {
       /* Normal 8 bit formats */
-      r8unorm: GL.R8,
-      //r8unorm-srgb: GL.SRGB8_ALPHA8,
-      r8snorm: GL.R8_SNORM,
-      r8uint: GL.R8UI,
-      r8sint: GL.R8I,
-
+      'r8unorm'             : {format: GL.R8                , unpack_format: GL.RED            , type: GL.UNSIGNED_BYTE               , float: true },
+      'r8snorm'             : {format: GL.R8_SNORM          , unpack_format: GL.RED            , type: GL.BYTE                        , float: true },
+      'r8uint'              : {format: GL.R8UI              , unpack_format: GL.RED            , type: GL.UNSIGNED_BYTE               , float: false},
+      'r8sint'              : {format: GL.R8I               , unpack_format: GL.RED            , type: GL.BYTE                        , float: false},
       /* Normal 16 bit formats */
-      //r16unorm: GL.R16,
-      //r16snorm: GL.R16_SNORM,
-      r16uint: GL.R16UI,
-      r16sint: GL.R16I,
-      r16float: GL.R16F,
-      rg8unorm: GL.RG8,
-      //rg8unorm-srgb: GL.SRGB8_ALPHA8,
-      rg8snorm: GL.RG8_SNORM,
-      rg8uint: GL.RG8UI,
-      rg8sint: GL.RG8I,
-
+    //'r16unorm'            : {format: GL.R16               , unpack_format: GL.RED            , type: GL.UNSIGNED_SHORT              , float: true },
+    //'r16snorm'            : {format: GL.R16_SNORM         , unpack_format: GL.RED            , type: GL.UNSIGNED_SHORT              , float: true },
+      'r16uint'             : {format: GL.R16UI             , unpack_format: GL.RED            , type: GL.UNSIGNED_SHORT              , float: false},
+      'r16sint'             : {format: GL.R16I              , unpack_format: GL.RED            , type: GL.SHORT                       , float: false},
+      'r16float'            : {format: GL.R16F              , unpack_format: GL.RED            , type: GL.HALF_FLOAT                  , float: true },
+      'rg8unorm'            : {format: GL.RG8               , unpack_format: GL.RG             , type: GL.UNSIGNED_BYTE               , float: true },
+      'rg8snorm'            : {format: GL.RG8_SNORM         , unpack_format: GL.RG             , type: GL.BYTE                        , float: true },
+      'rg8uint'             : {format: GL.RG8UI             , unpack_format: GL.RG             , type: GL.UNSIGNED_BYTE               , float: false},
+      'rg8sint'             : {format: GL.RG8I              , unpack_format: GL.RG             , type: GL.BYTE                        , float: false},
       /* Packed 16 bit formats */
-      b5g6r5unorm: GL.RGB565,
-
+      'b5g6r5unorm'         : {format: GL.RGB565            , unpack_format: GL.RGB            , type: GL.UNSIGNED_SHORT_5_6_5        , float: true },
       /* Normal 32 bit formats */
-      r32uint: GL.R32UI,
-      r32sint: GL.R32I,
-      r32float: GL.R32F,
-      //rg16unorm: GL.RG16,
-      //rg16snorm: GL.RG16_SNORM,
-      rg16uint: GL.RG16UI,
-      rg16sint: GL.RG16I,
-      rg16float: GL.RG16F,
-      rgba8unorm: GL.RGBA8,
-      'rgba8unorm-srgb': GL.SRGB8_ALPHA8,
-      rgba8snorm: GL.RGBA8_SNORM,
-      rgba8uint: GL.RGBA8UI,
-      rgba8sint: GL.RGBA8I,
-      bgra8unorm: GL.RGBA8,
-      'bgra8unorm-srgb': GL.SRGB8_ALPHA8,
-
+      'r32uint'             : {format: GL.R32UI             , unpack_format: GL.RED            , type: GL.UNSIGNED_INT                , float: false},
+      'r32sint'             : {format: GL.R32I              , unpack_format: GL.RED            , type: GL.INT                         , float: false},
+      'r32float'            : {format: GL.R32F              , unpack_format: GL.RED            , type: GL.FLOAT                       , float: true },
+    //'rg16unorm'           : {format: GL.RG16              , unpack_format: GL.RG             , type: GL.UNSIGNED_SHORT              , float: true },
+    //'rg16snorm'           : {format: GL.RG16_SNORM        , unpack_format: GL.RG             , type: GL.SHORT                       , float: true },
+      'rg16uint'            : {format: GL.RG16UI            , unpack_format: GL.RG             , type: GL.UNSIGNED_SHORT              , float: false},
+      'rg16sint'            : {format: GL.RG16I             , unpack_format: GL.RG             , type: GL.SHORT                       , float: false},
+      'rg16float'           : {format: GL.RG16F             , unpack_format: GL.RG             , type: GL.HALF_FLOAT                  , float: true },
+      'rgba8unorm'          : {format: GL.RGBA8             , unpack_format: GL.RGBA           , type: GL.UNSIGNED_BYTE               , float: true },
+      'rgba8unorm-srgb'     : {format: GL.SRGB8_ALPHA8      , unpack_format: GL.RGBA           , type: GL.UNSIGNED_BYTE               , float: true },
+      'rgba8snorm'          : {format: GL.RGBA8_SNORM       , unpack_format: GL.RGBA           , type: GL.BYTE                        , float: true },
+      'rgba8uint'           : {format: GL.RGBA8UI           , unpack_format: GL.RGBA           , type: GL.UNSIGNED_BYTE               , float: false},
+      'rgba8sint'           : {format: GL.RGBA8I            , unpack_format: GL.RGBA           , type: GL.BYTE                        , float: false},
+      'bgra8unorm'          : {format: GL.RGBA8             , unpack_format: GL.RGBA           , type: GL.UNSIGNED_BYTE               , float: true },
+      'bgra8unorm-srgb'     : {format: GL.SRGB8_ALPHA8      , unpack_format: GL.RGBA           , type: GL.UNSIGNED_BYTE               , float: true },
       /* Packed 32 bit formats */
-      rgb10a2unorm: GL.RGB10_A2,
-      rg11b10float: GL.R11F_G11F_B10F,
-
+      'rgb10a2unorm'        : {format: GL.RGB10_A2          , unpack_format: GL.RGBA           , type: GL.UNSIGNED_INT_2_10_10_10_REV , float: true },
+      'rg11b10float'        : {format: GL.R11F_G11F_B10F    , unpack_format: GL.RGB            , type: GL.UNSIGNED_INT_10F_11F_11F_REV, float: true },
       /* Normal 64 bit formats */
-      rg32uint: GL.RG32UI,
-      rg32sint: GL.RG32I,
-      rg32float: GL.RG32F,
-      //rgba16unorm: GL.RGBA16,
-      //rgba16snorm: GL.RGBA16_SNORM,
-      rgba16uint: GL.RGBA16UI,
-      rgba16sint: GL.RGBA16I,
-      rgba16float: GL.RGBA16F,
-
+      'rg32uint'            : {format: GL.RG32UI            , unpack_format: GL.RG             , type: GL.UNSIGNED_INT                , float: false},
+      'rg32sint'            : {format: GL.RG32I             , unpack_format: GL.RG             , type: GL.INT                         , float: false},
+      'rg32float'           : {format: GL.RG32F             , unpack_format: GL.RG             , type: GL.FLOAT                       , float: true },
+    //'rgba16unorm'         : {format: GL.RGBA16            , unpack_format: GL.RGBA           , type: GL.UNSIGNED_SHORT              , float: true },
+    //'rgba16snorm'         : {format: GL.RGBA16_SNORM      , unpack_format: GL.RGBA           , type: GL.SHORT                       , float: true },
+      'rgba16uint'          : {format: GL.RGBA16UI          , unpack_format: GL.RGBA           , type: GL.UNSIGNED_SHORT              , float: false},
+      'rgba16sint'          : {format: GL.RGBA16I           , unpack_format: GL.RGBA           , type: GL.SHORT                       , float: false},
+      'rgba16float'         : {format: GL.RGBA16F           , unpack_format: GL.RGBA           , type: GL.HALF_FLOAT                  , float: true },
       /* Normal 128 bit formats */
-      rgba32uint: GL.RGBA32UI,
-      rgba32sint: GL.RGBA32I,
-      rgba32float: GL.RGBA32F,
-
-      depth32float: GL.DEPTH_COMPONENT32F,
-      depth24plus: GL.DEPTH_COMPONENT24,
-      'depth24plus-stencil8': GL.DEPTH24_STENCIL8,
+      'rgba32uint'          : {format: GL.RGBA32UI          , unpack_format: GL.RGBA           , type: GL.UNSIGNED_INT                , float: false},
+      'rgba32sint'          : {format: GL.RGBA32I           , unpack_format: GL.RGBA           , type: GL.INT                         , float: false},
+      'rgba32float'         : {format: GL.RGBA32F           , unpack_format: GL.RGBA           , type: GL.FLOAT                       , float: true },
+      /* Depth/stencil formats */
+      'depth32float'        : {format: GL.DEPTH_COMPONENT32F, unpack_format: GL.DEPTH_COMPONENT, type: GL.FLOAT                       , float: true },
+      'depth24plus'         : {format: GL.DEPTH_COMPONENT24 , unpack_format: GL.DEPTH_COMPONENT, type: GL.UNSIGNED_INT                , float: true },
+      'depth24plus-stencil8': {format: GL.DEPTH24_STENCIL8  , unpack_format: GL.DEPTH_STENCIL  , type: GL.UNSIGNED_INT_24_8           , float: true },
    };
+
+   const DEFAULT_RENDERABLE = Object.fromEntries([
+      'R8',
+      'RG8',
+      'RGB8',
+      'RGB565',
+      'RGBA4',
+      'RGB5_A1',
+      'RGBA8',
+      'RGB10_A2',
+      'RGB10_A2UI',
+      'SRGB8_ALPHA8',
+      'R8I',
+      'R8UI',
+      'R16I',
+      'R16UI',
+      'R32I',
+      'R32UI',
+      'RG8I',
+      'RG8UI',
+      'RG16I',
+      'RG16UI',
+      'RG32I',
+      'RG32UI',
+      'RGBA8I',
+      'RGBA8UI',
+      'RGBA16I',
+      'RGBA16UI',
+      'RGBA32I',
+      'RGBA32UI',
+   ].map(x => [GL[x], true]));
+   const FLOAT_RENDERABLE = Object.fromEntries([
+      'R16F',
+      'R32F',
+      'RG16F',
+      'RG32F',
+      'RGBA16F',
+      'RGBA32F',
+      'R11F_G11F_B10F',
+   ].map(x => [GL[x], true]));
 
    class GPUTexture_JS {
       constructor(device, desc, swap_chain) {
@@ -594,64 +720,104 @@ navigator.gpu_js = (() => {
          desc = make_GPUTextureDescriptor(desc);
          this.desc = desc;
          this.swap_chain = swap_chain;
+         desc.format_info = TEX_FORMAT_INFO[desc.format];
+         VALIDATE(desc.format_info, 'Unsupported: GPUTextureFormat ' + desc.format);
+
+         if (desc.usage & (GPUTextureUsage.COPY_SRC | GPUTextureUsage.OUTPUT_ATTACHMENT)) {
+            let renderable = DEFAULT_RENDERABLE[desc.format_info.format];
+            if (!renderable) {
+               renderable = FLOAT_RENDERABLE[desc.format_info.format];
+               if (renderable) {
+                  const gl = device.gl;
+                  const ext = gl.getExtension('EXT_color_buffer_float');
+                  ASSERT(ext,
+                         'EXT_color_buffer_float required for GPUTextureUsage.[COPY_SRC,OUTPUT_ATTACHMENT] with ' + desc.format);
+               }
+            }
+            ASSERT(renderable,
+                   'Unsupported: GPUTextureUsage.[COPY_SRC,OUTPUT_ATTACHMENT] with ' + desc.format);
+         }
+
+         ASSERT(desc.sampleCount == 1, 'desc.sampleCount >1 not supported.');
+         if (desc.dimension == '1d') {
+            desc.size.height = 1;
+            desc.size.depth = 1;
+            desc.size.arrayLayerCount = 1;
+         } else if (desc.dimension == '2d') {
+            desc.size.depth = 1;
+         } else {
+            desc.size.arrayLayerCount = 1;
+         }
 
          if (!this.swap_chain) {
             this._ensure_tex();
          }
       }
 
-      _ensure_tex() {
-         if (!this.tex) {
-            const gl = dev.gl;
-            if (desc.sampleCount != 1) throw new Error('desc.sampleCount >1 not supported.');
+      _ensure_tex(dim) {
+         if (this._gl_obj) {
+            ASSERT(dim == this._gl_obj.dim,
+            'GPUTextureViewDimension conversion not supported: ' + dim + '->' + this._gl_obj.dim);
+         } else {
+            if (!dim) {
+               // Guess!
+               if (this.desc.dimension == '1d') {
+                  dim = '2d';
+               } else if (this.desc.dimension == '3d') {
+                  dim = '3d';
+               } else if (this.desc.arrayLayerCount == 6 &&
+                          this.desc.usage & GPUTextureUsage.SAMPLED) {
+                  dim = 'cube'; // A Good Guess. :)
+               } else if (this.desc.arrayLayerCount > 1) {
+                  dim = '2d-array';
+               } else {
+                  dim = '2d';
+               }
+            }
 
+            const desc = this.desc;
+            const gl = this.device.gl;
             const tex = gl.createTexture();
-            this.tex = tex;
-            tex.format = GL_TEX_FORMAT[desc.format];
+            this._gl_obj = tex;
+            tex.dim = dim;
+            tex.format = TEX_FORMAT_INFO[this.desc.format].format;
 
-            function bind(target) {
+            function bind_into(target) {
                tex.target = target;
                gl.bindTexture(target, tex);
             }
 
-            if (desc.dimension == '1d') {
-               desc.size.height = 1;
-               desc.size.depth = 1;
-            } else if (desc.dimension == '2d') {
-               desc.size.depth = 1;
-            }
-
-            if (desc.dimension == '3d') {
-               bind(GL.TEXTURE_3D);
+            if (dim == '3d') {
+               bind_into(GL.TEXTURE_3D);
                gl.texStorage3D(tex.target, desc.mipLevelCount, tex.format, desc.size.width,
                                desc.size.height, desc.size.depth);
-            } else if (desc.arrayLayerCount == 6 &&
-                desc.usage & GPUTextureUsage.SAMPLED) {
-               bind(GL.TEXTURE_CUBE_MAP); //  A Good Guess. :)
+            } else if (dim == 'cube') {
+               bind_into(GL.TEXTURE_CUBE_MAP);
                gl.texStorage2D(tex.target, desc.mipLevelCount, tex.format, desc.size.width,
                                desc.size.height);
-            } else if (desc.arrayLayerCount > 1) {
-               tex.target = GL.TEXTURE_2D_ARRAY;
+            } else if (dim == '2d-array') {
+               bind_into(GL.TEXTURE_2D_ARRAY);
                gl.texStorage3D(tex.target, desc.mipLevelCount, tex.format, desc.size.width,
                                desc.size.height, desc.arrayLayerCount);
             } else {
-               tex.target = GL.TEXTURE_2D;
-               if (desc.dimension == '1d') {
-                  desc.size.height = 1;
-               }
+               bind_into(GL.TEXTURE_2D);
                gl.texStorage2D(tex.target, desc.mipLevelCount, tex.format, desc.size.width,
                                desc.size.height);
             }
          }
-         return this.tex;
+         return this._gl_obj;
       }
 
       createView(desc) {
          try {
             VALIDATE(!this.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
-            return new GPUTextureView_JS(this, make_GPUTextureViewDescriptor(desc));
-         } catch (e) { this.device._catch(e); }
+            REQUIRE_NON_NULL(desc, 'GPUTextureView');
+            return new GPUTextureView_JS(this, desc);
+         } catch (e) {
+            this.device._catch(e);
+            return new GPUTextureView_JS(this, null);
+         }
       }
 
       createDefaultView() {
@@ -669,7 +835,7 @@ navigator.gpu_js = (() => {
             VALIDATE(!this.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
             const gl = this.device.gl;
-            gl.deleteTexture(this.tex);
+            gl.deleteTexture(this._gl_obj);
          } catch (e) { this.device._catch(e); }
       }
    }
@@ -683,6 +849,13 @@ navigator.gpu_js = (() => {
             return;
          desc = make_GPUBindGroupLayout(desc);
          this.desc = desc;
+
+         this._sparse_binding_layouts = [];
+         for (const binding_layout of desc.bindings) {
+            VALIDATE(this._sparse_binding_layouts[binding_layout.binding] === undefined,
+                     'Duplicate binding layout location.');
+            this._sparse_binding_layouts[binding_layout.binding] = binding_layout;
+         }
       }
    }
 
@@ -694,6 +867,7 @@ navigator.gpu_js = (() => {
    }
    function make_GPUBindGroupLayoutBinding(desc) {
       desc = Object.assign({
+         multisample: false,
          dynamic: false,
       }, desc);
       REQUIRE(desc, 'GPUBindGroupLayoutBinding', 'binding');
@@ -711,6 +885,11 @@ navigator.gpu_js = (() => {
             return;
          desc = make_GPUPipelineLayoutDescriptor(desc);
          this.desc = desc;
+         let bindingCount = 0;
+         desc.bindGroupLayouts.forEach(x => {
+            x._bindingOffset = bindingCount;
+            bindingCount += x.desc.bindings.length;
+         });
       }
    }
 
@@ -719,6 +898,77 @@ navigator.gpu_js = (() => {
       }, desc);
       REQUIRE_SEQ(desc, 'GPUPipelineLayoutDescriptor', 'bindGroupLayouts', GPUBindGroupLayout_JS);
       return desc;
+   }
+
+   // -
+
+   class GPUBindGroup_JS {
+      constructor(device, desc) {
+         this.device = device;
+         if (!desc)
+            return;
+         desc = make_GPUBindGroupDescriptor(desc);
+         this.desc = desc;
+
+         const used_bindings = {};
+         for (const binding of desc.bindings) {
+            VALIDATE(!used_bindings[binding.binding], 'Duplicate binding location.');
+            used_bindings[binding.binding] = true;
+
+            const layout = desc.layout._sparse_binding_layouts[binding.binding];
+            VALIDATE(layout, 'Binding location has no BindGroupLayout entry.');
+
+            if (binding.resource.sampler) {
+               VALIDATE(layout.type == 'sampler', 'GPUSampler must be bound to GPUBindingType sampler');
+
+            } else if (binding.resource.texture_view) {
+               const types = ['sampled-texture', 'storage-texture'];
+               VALIDATE(types.includes(layout.type), 'GPUTextureView must be bound to GPUBindingType ' + types.join('/'));
+               VALIDATE(layout.textureDimension == binding.resource.texture_view.desc.dimension,
+                        'Bad GPUBindGroupLayoutBinding.textureDimension for given GPUTextureView.');
+               VALIDATE(layout.multisample == (binding.resource.texture_view.tex.desc.sampleCount != 1),
+                        'Bad GPUBindGroupLayoutBinding.multisample for given GPUTextureView.');
+
+            } else if (binding.resource.buffer_binding) {
+               const types = ['uniform-buffer', 'storage-buffer', 'readonly-storage-buffer'];
+               VALIDATE(types.includes(layout.type), 'GPUBufferBinding must be bound to GPUBindingType ' + types.join('/'));
+               const cur = binding.resource.buffer_binding;
+               VALIDATE(cur.buffer.desc.usage & GPUBufferUsage.UNIFORM,
+                        'GPUBufferBinding.buffer must have GPUBufferUsage.UNIFORM.');
+
+            } else {
+               ASSERT(false, 'Bad GPUBindingResource type.');
+            }
+            binding._layout = layout;
+         }
+      }
+   }
+
+   function make_GPUBindGroupDescriptor(desc) {
+      desc = Object.assign({
+      }, desc);
+      REQUIRE(desc, 'GPUBindGroupDescriptor', 'layout', GPUBindGroupLayout_JS);
+      REQUIRE_SEQ(desc, 'GPUBindGroupDescriptor', 'bindings', null, make_GPUBindGroupBinding);
+      return desc;
+   }
+   function make_GPUBindGroupBinding(desc) {
+      desc = Object.assign({
+      }, desc);
+      REQUIRE(desc, 'GPUBindGroupBinding', 'binding');
+      REQUIRE(desc, 'GPUBindGroupBinding', 'resource', null, make_GPUBindingResource);
+      return desc;
+   }
+   function make_GPUBindingResource(cur) {
+      if (cur instanceof GPUSampler_JS)
+         return {sampler: cur};
+      if (cur instanceof GPUTextureView_JS)
+         return {texture_view: cur};
+
+      desc = Object.assign({
+         offset: 0,
+      }, cur);
+      REQUIRE(desc, 'GPUBufferBinding', 'buffer', GPUBuffer_JS);
+      return {buffer_binding: desc};
    }
 
    // -
@@ -806,6 +1056,26 @@ navigator.gpu_js = (() => {
       'decrement-wrap' : GL.DECR_WRAP,
    };
 
+   const SAMPLER_INFO_BY_TYPE = {};
+   SAMPLER_INFO_BY_TYPE[GL.SAMPLER_2D                   ] = {dim: '2d'      , type: 'f', shadow: false};
+   SAMPLER_INFO_BY_TYPE[GL.SAMPLER_2D_SHADOW            ] = {dim: '2d'      , type: 'f', shadow: true };
+   SAMPLER_INFO_BY_TYPE[GL.SAMPLER_3D                   ] = {dim: '3d'      , type: 'f', shadow: false};
+   SAMPLER_INFO_BY_TYPE[GL.SAMPLER_CUBE                 ] = {dim: 'cube'    , type: 'f', shadow: false};
+   SAMPLER_INFO_BY_TYPE[GL.SAMPLER_CUBE_SHADOW          ] = {dim: 'cube'    , type: 'f', shadow: true };
+   SAMPLER_INFO_BY_TYPE[GL.SAMPLER_2D_ARRAY             ] = {dim: '2d-array', type: 'f', shadow: false};
+   SAMPLER_INFO_BY_TYPE[GL.SAMPLER_2D_ARRAY_SHADOW      ] = {dim: '2d-array', type: 'f', shadow: true };
+   SAMPLER_INFO_BY_TYPE[GL.INT_SAMPLER_2D               ] = {dim: '2d'      , type: 'i', shadow: false};
+   SAMPLER_INFO_BY_TYPE[GL.INT_SAMPLER_3D               ] = {dim: '3d'      , type: 'i', shadow: false};
+   SAMPLER_INFO_BY_TYPE[GL.INT_SAMPLER_CUBE             ] = {dim: 'cube'    , type: 'i', shadow: false};
+   SAMPLER_INFO_BY_TYPE[GL.INT_SAMPLER_2D_ARRAY         ] = {dim: '2d-array', type: 'i', shadow: false};
+   SAMPLER_INFO_BY_TYPE[GL.UNSIGNED_INT_SAMPLER_2D      ] = {dim: '2d'      , type: 'u', shadow: false};
+   SAMPLER_INFO_BY_TYPE[GL.UNSIGNED_INT_SAMPLER_3D      ] = {dim: '3d'      , type: 'u', shadow: false};
+   SAMPLER_INFO_BY_TYPE[GL.UNSIGNED_INT_SAMPLER_CUBE    ] = {dim: 'cube'    , type: 'u', shadow: false};
+   SAMPLER_INFO_BY_TYPE[GL.UNSIGNED_INT_SAMPLER_2D_ARRAY] = {dim: '2d-array', type: 'u', shadow: false};
+
+   const RE_BINDING_PREFIX = /webgpu_group([0-9]+)_binding([0-9]+)_*(.*)/;
+
+
    class GPURenderPipeline_JS {
       constructor(device, desc) {
          this.device = device;
@@ -828,7 +1098,7 @@ navigator.gpu_js = (() => {
                const format = VERTEX_FORMAT[attrib.format];
 
                attrib.set_buf_offset = (gpu_buf, buf_offset) => {
-                  const gl_buf = gpu_buf ? gpu_buf.buf : null;
+                  const gl_buf = gpu_buf ? gpu_buf._gl_obj : null;
                   gl.bindBuffer(GL.ARRAY_BUFFER, gl_buf);
                   if (format.float) {
                      gl.vertexAttribPointer(attrib.shaderLocation, format.channels, format.type,
@@ -874,6 +1144,112 @@ navigator.gpu_js = (() => {
             gl.deleteShader(fs);
          }
          this.prog = prog;
+
+         // -
+         // `layout(binding=N) uniform` only added in ESSL310 :(
+
+         function parse_binding(name, kind) {
+            const match = name.match(RE_BINDING_PREFIX);
+            VALIDATE(match,
+                     name + ': GLSL uniform ' + kind + ' binding must start with /webgpu_group[0-9]+_binding[0-9]+_*/');
+            return {
+               group: parseInt(match[1]),
+               binding: parseInt(match[2]),
+            };
+         }
+
+         const prog_was = gl.getParameter(gl.CURRENT_PROGRAM);
+         gl.useProgram(prog);
+         try {
+            const au_count = gl.getProgramParameter(prog, GL.ACTIVE_UNIFORMS);
+            const au_ids = new Array(au_count).fill(1).map((x,i) => i);
+            const au_types = gl.getActiveUniforms(prog, au_ids, GL.UNIFORM_TYPE);
+            const au_block = gl.getActiveUniforms(prog, au_ids, GL.UNIFORM_BLOCK_INDEX);
+
+            const validated_blocks = {};
+            const used_locations = {};
+            au_ids.forEach(active_id => {
+               const block_id = au_block[active_id];
+               if (block_id != -1) {
+                  if (validated_blocks[block_id])
+                     return;
+
+                  const name = gl.getActiveUniformBlockName(prog, block_id);
+                  const loc = parse_binding(name, 'block');
+                  const loc_str = loc.group + ',' + loc.binding;
+                  VALIDATE(!used_locations[loc_str],
+                           name + ': Location already in use: ' + loc_str);
+                  used_locations[loc_str] = name;
+
+                  const bg_layout = desc.layout.desc.bindGroupLayouts[loc.group];
+                  VALIDATE(bg_layout, name + ': No corresponding GPUBindGroupLayout');
+
+                  const binding_info = bg_layout.desc.bindings[loc.binding];
+                  VALIDATE(binding_info, name + ': No corresponding GPUBindGroupLayoutBinding');
+                  const types = ['uniform-buffer' , 'storage-buffer', 'readonly-storage-buffer'];
+                  VALIDATE(types.includes(binding_info.type),
+                           name + ': GLSL uniform block requires GPUBindingType ' + types.join('/'));
+
+                  const gl_binding = bg_layout._bindingOffset + loc.binding;
+                  gl.uniformBlockBinding(prog, block_id, gl_binding);
+                  validated_blocks[block_id] = true;
+
+                  //const req_size = gl.getActiveUniformBlockParameter(prog, block_id, GL.UNIFORM_BLOCK_DATA_SIZE);
+                  //console.log(name + ': req_size: ' + req_size);
+                  return;
+               }
+               // Default-block uniforms:
+
+               const info = gl.getActiveUniform(prog, active_id);
+               const name = info.name;
+               const sampler_info = SAMPLER_INFO_BY_TYPE[info.type];
+               VALIDATE(sampler_info, name + ': GLSL non-sampler uniforms must be within a uniform block');
+
+               // -
+
+               const t_loc = parse_binding(name, 'sampler');
+               const s_loc = Object.assign({}, t_loc);
+               s_loc.binding += 1;
+
+               const t_name = name + ' (texture)';
+               const s_name = name + ' (sampler)';
+
+               const t_loc_str = t_loc.group + ',' + t_loc.binding;
+               const s_loc_str = s_loc.group + ',' + s_loc.binding;
+
+               VALIDATE(!used_locations[t_loc_str],
+                        t_name + ': Binding is already in use: ' + used_locations[t_loc_str]);
+               VALIDATE(!used_locations[s_loc_str],
+                        s_name + ': Binding is already in use: ' + used_locations[s_loc_str]);
+               used_locations[t_loc_str] = t_name;
+               used_locations[s_loc_str] = s_name;
+
+               // -
+
+               const bg_layout = desc.layout.desc.bindGroupLayouts[t_loc.group];
+               VALIDATE(bg_layout, name + ': No corresponding GPUBindGroupLayout');
+
+               const t_binding_info = bg_layout.desc.bindings[t_loc.binding];
+               VALIDATE(t_binding_info,
+                        t_name + ': No corresponding GPUBindGroupLayoutBinding for binding ' + t_loc_str);
+               VALIDATE(t_binding_info.type == 'sampled-texture',
+                        t_name + ': GLSL sampler requires layout GPUBindingType "sampled-texture" for binding ' + t_loc_str);
+               VALIDATE(sampler_info.dim == t_binding_info.textureDimension,
+                        t_name + ': GLSL sampler dimensions must match GPUBindGroupLayout.textureDimension for binding ' + t_loc_str);
+
+               const s_binding_info = bg_layout.desc.bindings[s_loc.binding];
+               VALIDATE(s_binding_info,
+                        s_name + ': No corresponding GPUBindGroupLayout for binding ' + s_loc_str);
+               VALIDATE(s_binding_info.type == 'sampler',
+                        s_name + ': GLSL sampler requires layout GPUBindingType "sampler" for binding ' + s_loc_str);
+
+               const gl_binding = bg_layout._bindingOffset + t_loc.binding;
+               const gl_loc = gl.getUniformLocation(prog, name);
+               gl.uniform1i(gl_loc, gl_binding);
+            });
+         } finally {
+            gl.useProgram(prog_was);
+         }
 
          // -
 
@@ -1154,6 +1530,7 @@ navigator.gpu_js = (() => {
       endPass() {
          try {
             VALIDATE(!this.cmd_enc.device._is_lost, 'Device is lost.');
+            VALIDATE(this.desc, 'Invalid object.');
             if (this.cmd_enc.in_pass == this) {
                this.cmd_enc.in_pass = null;
             }
@@ -1308,6 +1685,8 @@ navigator.gpu_js = (() => {
          }
 
          this._vert_buf_list = [];
+         this._bind_group_list = [];
+         this._deferred_bind_group_updates = [];
 
          const attachment = desc.depthStencilAttachment || desc.colorAttachments[0];
          const size = attachment.attachment.tex.desc.size;
@@ -1320,25 +1699,41 @@ navigator.gpu_js = (() => {
          this.setVertexBuffers(0, [], []);
       }
 
+      setBindGroup(index, bind_group, dynamic_offset_list) {
+         try {
+            VALIDATE(!this.cmd_enc.device._is_lost, 'Device is lost.');
+            VALIDATE(this.desc, 'Invalid object.');
+
+            dynamic_offset_list = (dynamic_offset_list || []).slice();
+
+            this._deferred_bind_group_updates[index] = {
+               bind_group,
+               dynamic_offset_list,
+            };
+         } catch (e) { this.cmd_enc.device._catch(e); }
+      }
+
       setPipeline(pipeline) {
          try {
             VALIDATE(!this.cmd_enc.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
-            this.cmd_enc._add(() => {
-               this._pipeline = pipeline;
-               this._pipeline_ready = false;
-               this._vert_bufs_ready = false;
-               this._stencil_ref_ready = false;
-            });
+
+            this._pipeline = pipeline;
+            this._pipeline_ready = false;
+            this._vert_bufs_ready = false;
+            this._stencil_ref_ready = false;
+
          } catch (e) { this.cmd_enc.device._catch(e); }
       }
       setBlendColor(color) {
          try {
             VALIDATE(!this.cmd_enc.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
+
             color = make_GPUColor(color);
+            const gl = this.cmd_enc.device.gl;
+
             this.cmd_enc._add(() => {
-               const gl = this.cmd_enc.device.gl;
                gl.blendColor(color.r, color.g, color.b, color.a);
             });
          } catch (e) { this.cmd_enc.device._catch(e); }
@@ -1347,10 +1742,10 @@ navigator.gpu_js = (() => {
          try {
             VALIDATE(!this.cmd_enc.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
-            this.cmd_enc._add(() => {
-               this._stencil_ref = ref;
-               this._stencil_ref_ready = false;
-            });
+
+            this._stencil_ref = ref;
+            this._stencil_ref_ready = false;
+
          } catch (e) { this.cmd_enc.device._catch(e); }
       }
 
@@ -1358,8 +1753,10 @@ navigator.gpu_js = (() => {
          try {
             VALIDATE(!this.cmd_enc.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
+
+            const gl = this.cmd_enc.device.gl;
+
             this.cmd_enc._add(() => {
-               const gl = this.cmd_enc.device.gl;
                gl.viewport(x, y, w, h);
                gl.depthRange(min_depth, max_depth);
             });
@@ -1370,8 +1767,10 @@ navigator.gpu_js = (() => {
          try {
             VALIDATE(!this.cmd_enc.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
+
+            const gl = this.cmd_enc.device.gl;
+
             this.cmd_enc._add(() => {
-               const gl = this.cmd_enc.device.gl;
                gl.scissor(x, y, w, h);
             });
          } catch (e) { this.cmd_enc.device._catch(e); }
@@ -1381,11 +1780,13 @@ navigator.gpu_js = (() => {
          try {
             VALIDATE(!this.cmd_enc.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
+
+            this._index_buf_offset = offset;
+            const gl = this.cmd_enc.device.gl;
+            const gl_buf = buffer ? buffer._gl_obj : null;
+
             this.cmd_enc._add(() => {
-               const gl = this.cmd_enc.device.gl;
-               const gl_buf = buffer ? buffer.buf : null;
                gl.bindBuffer(GL.ELEMENT_ARRAY_BUFFER, gl_buf);
-               this._index_buf_offset = offset;
             });
          } catch (e) { this.cmd_enc.device._catch(e); }
       }
@@ -1393,29 +1794,99 @@ navigator.gpu_js = (() => {
          try {
             VALIDATE(!this.cmd_enc.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
-            this.cmd_enc._add(() => {
-               for (let i in buffers) {
-                  i |= 0; // Arr ids are strings! 0 + '0' is '00'!
-                  const slot = start_slot + i;
-                  this._vert_buf_list[slot] = [buffers[i], offsets[i]];
-               }
-               this._vert_bufs_ready = false;
-            });
+
+            for (let i in buffers) {
+               i |= 0; // Arr ids are strings! 0 + '0' is '00'!
+               const slot = start_slot + i;
+               this._vert_buf_list[slot] = [buffers[i], offsets[i]];
+            }
+            this._vert_bufs_ready = false;
+
          } catch (e) { this.cmd_enc.device._catch(e); }
       }
 
       _pre_draw() {
+         const gl = this.cmd_enc.device.gl;
+         const pipeline = this._pipeline;
          if (!this._pipeline_ready) {
-            this._pipeline._setup(this.desc.colorAttachments, this.desc.depthStencilAttachment);
+            this.cmd_enc._add(() => {
+               // Generally speaking, don't use `this.foo` in _add, but rather use copies.
+               // Exception: Immutable objects:
+               pipeline._setup(this.desc.colorAttachments, this.desc.depthStencilAttachment);
+            });
             this._pipeline_ready = true;
          }
          if (!this._vert_bufs_ready) {
-            this._pipeline._set_vert_buffers(this._vert_buf_list);
+            const cur_buf_list = this._vert_buf_list.slice(); // Make a copy to embed.
+            this.cmd_enc._add(() => {
+               pipeline._set_vert_buffers(cur_buf_list);
+            });
             this._vert_bufs_ready = true;
          }
          if (!this._stencil_ref_ready) {
-            this._pipeline._set_stencil_ref(this._stencil_ref);
+            const cup_stencil_ref = this._stencil_ref;
+            this.cmd_enc._add(() => {
+               pipeline._set_stencil_ref(cup_stencil_ref);
+            });
             this._stencil_ref_ready = true;
+         }
+         const pipeline_bg_layouts = pipeline.desc.layout.desc.bindGroupLayouts;
+         if (this._deferred_bind_group_updates.length) {
+            this._deferred_bind_group_updates.forEach((update, i) => {
+               //console.log('def', update, i);
+               const bg_layout = pipeline_bg_layouts[i];
+               if (!bg_layout)
+                  return;
+               //console.log('bg_layout', bg_layout);
+               this._deferred_bind_group_updates[i] = undefined;
+
+               for (const cur of update.bind_group.desc.bindings) {
+                  let loc = bg_layout._bindingOffset + cur.binding;
+                  //console.log(cur, loc);
+                  const res = cur.resource;
+
+                  if (res.sampler) {
+                     loc -= 1; // GPUSamplers are implied just after their sampled-textures.
+                     this.cmd_enc._add(() => {
+                        //console.log('bindSampler', loc, res.sampler._gl_obj);
+                        gl.bindSampler(loc, res.sampler._gl_obj);
+                     });
+                     continue;
+                  }
+
+                  if (res.texture_view) {
+                     this.cmd_enc._add(() => {
+                        //console.log('activeTexture', loc);
+                        gl.activeTexture(GL.TEXTURE0 + loc);
+                        res.texture_view._bind_texture();
+                     });
+                     continue;
+                  }
+
+                  const buf = res.buffer_binding.buffer;
+                  let offset = res.buffer_binding.offset;
+                  let size = res.buffer_binding.size;
+
+                  if (cur._layout.dynamic) {
+                     VALIDATE(update.dynamic_offset_list.length, 'Not enough dynamic offsets');
+                     offset += update.dynamic_offset_list.shift();
+                  }
+
+                  if (!size) {
+                     size = buf.desc.size - offset;
+                  }
+                  this.cmd_enc._add(() => {
+                     //console.log('bindBufferRange', loc, buf._gl_obj, offset, size);
+                     gl.bindBufferRange(GL.UNIFORM_BUFFER, loc, buf._gl_obj, offset, size);
+                  });
+               }
+            });
+            while (this._deferred_bind_group_updates.length) {
+               const last = this._deferred_bind_group_updates[this._deferred_bind_group_updates.length-1];
+               if (last)
+                  break;
+               this._deferred_bind_group_updates.pop();
+            }
          }
       }
 
@@ -1424,11 +1895,13 @@ navigator.gpu_js = (() => {
             VALIDATE(!this.cmd_enc.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
             VALIDATE(base_inst == 0, 'firstInstance must be 0');
-            this.cmd_enc._add(() => {
-               this._pre_draw();
 
-               const gl = this.cmd_enc.device.gl;
-               const prim_topo = PRIM_TOPO[this._pipeline.desc.primitiveTopology];
+            this._pre_draw();
+
+            const gl = this.cmd_enc.device.gl;
+            const prim_topo = PRIM_TOPO[this._pipeline.desc.primitiveTopology];
+
+            this.cmd_enc._add(() => {
                gl.drawArraysInstanced(prim_topo, base_vert, vert_count, inst_count);
             });
          } catch (e) { this.cmd_enc.device._catch(e); }
@@ -1438,13 +1911,15 @@ navigator.gpu_js = (() => {
             VALIDATE(!this.cmd_enc.device._is_lost, 'Device is lost.');
             VALIDATE(this.desc, 'Invalid object.');
             VALIDATE(base_inst == 0, 'firstInstance must be 0');
-            this.cmd_enc._add(() => {
-               this._pre_draw();
 
-               const gl = this.cmd_enc.device.gl;
-               const prim_topo = PRIM_TOPO[this._pipeline.desc.primitiveTopology];
-               const format = INDEX_FORMAT[this._pipeline.desc.vertexInput.indexFormat];
-               const offset = this._index_buf_offset + base_index * format.size;
+            this._pre_draw();
+
+            const gl = this.cmd_enc.device.gl;
+            const prim_topo = PRIM_TOPO[this._pipeline.desc.primitiveTopology];
+            const format = INDEX_FORMAT[this._pipeline.desc.vertexInput.indexFormat];
+            const offset = this._index_buf_offset + base_index * format.size;
+
+            this.cmd_enc._add(() => {
                gl.drawElementsInstanced(prim_topo, index_count, format.type, offset, inst_count);
             });
          } catch (e) { this.cmd_enc.device._catch(e); }
@@ -1507,6 +1982,79 @@ navigator.gpu_js = (() => {
          }
       }
 
+      copyBufferToBuffer(source, sourceOffset, destination, destinationOffset, size) {
+         try {
+            VALIDATE(!this.device._is_lost, 'Device is lost.');
+            VALIDATE(this.desc, 'Invalid object.');
+            VALIDATE(!this.in_pass, 'Cannot be within pass.');
+            VALIDATE(!this.is_finished, 'Already finished.');
+
+            VALIDATE(source.device == this.device &&
+                     source.desc &&
+                     !source._mapped() &&
+                     source.desc.usage & GPUBufferUsage.COPY_SRC, 'Invalid source object.');
+            VALIDATE(destination.device == this.device &&
+                     destination.desc &&
+                     !destination._mapped() &&
+                     destination.desc.usage & GPUBufferUsage.COPY_DST, 'Invalid destination object.');
+
+            const gl = this.device.gl;
+            gl.bindBuffer(GL.COPY_READ_BUFFER, source._gl_obj);
+            gl.bindBuffer(GL.COPY_WRITE_BUFFER, destination._gl_obj);
+            gl.copyBufferSubData(GL.COPY_READ_BUFFER, GL.COPY_WRITE_BUFFER, sourceOffset, destinationOffset, size);
+            gl.bindBuffer(GL.COPY_READ_BUFFER, null);
+            gl.bindBuffer(GL.COPY_WRITE_BUFFER, null);
+         } catch (e) { this.device._catch(e); }
+      }
+
+      copyBufferToTexture(src, dest, size) {
+         try {
+            VALIDATE(!this.device._is_lost, 'Device is lost.');
+            VALIDATE(this.desc, 'Invalid object.');
+            VALIDATE(!this.in_pass, 'Cannot be within pass.');
+            VALIDATE(!this.is_finished, 'Already finished.');
+
+            src = make_GPUBufferCopyView(src);
+            dest = make_GPUTextureCopyView(dest);
+            size = make_GPUExtent3D(size);
+
+            VALIDATE(src.buffer.device == this.device &&
+                     src.buffer.desc &&
+                     !src.buffer._mapped() &&
+                     src.buffer.desc.usage & GPUBufferUsage.COPY_SRC, 'Invalid source object.');
+            VALIDATE(dest.texture.device == this.device &&
+                     dest.texture.desc &&
+                     dest.texture.desc.usage & GPUTextureUsage.COPY_DST, 'Invalid destination object.');
+
+            const format = TEX_FORMAT_INFO[dest.texture.desc.format];
+
+            const gl = this.device.gl;
+            gl.bindBuffer(GL.PIXEL_UNPACK_BUFFER, src.buffer._gl_obj);
+            const dst_target = dest.texture._gl_obj.target;
+            gl.bindTexture(dst_target, dest.texture._gl_obj);
+            if (dst_target == GL.TEXTURE_3D) {
+               gl.texSubImage3D(dst_target, dest.mipLevel,  dest.origin.x, dest.origin.y, dest.origin.z,
+                                size.width, size.height, size.depth,
+                                format.unpack_format, format.type, src.offset);
+            } else if (dst_target == GL.TEXTURE_2D_ARRAY) {
+               gl.texSubImage3D(dst_target, dest.mipLevel, dest.origin.x, dest.origin.y, dest.arrayLayer,
+                                size.width, size.height, 1,
+                                format.unpack_format, format.type, src.offset);
+            } else if (dst_target == GL.TEXTURE_CUBE_MAP) {
+               // Cubemaps are the wooorst.
+               gl.texSubImage2D(dst_target, dest.mipLevel, dest.origin.x, dest.origin.y,
+                                size.width, size.height,
+                                format.unpack_format, format.type, src.offset);
+            } else {
+               gl.texSubImage2D(dst_target, dest.mipLevel, dest.origin.x, dest.origin.y,
+                                size.width, size.height,
+                                format.unpack_format, format.type, src.offset);
+            }
+            gl.bindTexture(dst_target, null);
+            gl.bindBuffer(GL.PIXEL_UNPACK_BUFFER, null);
+         } catch (e) { this.device._catch(e); }
+      }
+
       finish() {
          try {
             VALIDATE(!this.device._is_lost, 'Device is lost.');
@@ -1525,6 +2073,26 @@ navigator.gpu_js = (() => {
    function make_GPUCommandEncoderDescriptor(desc) {
       desc = Object.assign({
       }, desc);
+      return desc;
+   }
+
+   function make_GPUBufferCopyView(desc) {
+      desc = Object.assign({
+         offset: 0,
+      }, desc);
+      REQUIRE(desc, 'GPUBufferCopyView ', 'buffer', GPUBuffer_JS);
+      REQUIRE(desc, 'GPUBufferCopyView ', 'rowPitch');
+      REQUIRE(desc, 'GPUBufferCopyView ', 'imageHeight');
+      return desc;
+   }
+   function make_GPUTextureCopyView(desc) {
+      desc = Object.assign({
+         mipLevel: 0,
+         arrayLayer: 0,
+         origin: [0, 0, 0],
+      }, desc);
+      REQUIRE(desc, 'GPUTextureCopyView ', 'texture', GPUTexture_JS);
+      desc.origin = make_GPUOrigin3D(desc.origin);
       return desc;
    }
 
@@ -1740,6 +2308,15 @@ navigator.gpu_js = (() => {
             return new GPUTexture_JS(this, null);
          }
       }
+      createSampler(desc) {
+         try {
+            VALIDATE(!this._is_lost, 'Device is lost.');
+            return new GPUSampler_JS(this, desc || {});
+         } catch (e) {
+            this._catch(e);
+            return new GPUSampler_JS(this, null);
+         }
+      }
 
       createBindGroupLayout(desc) {
          try {
@@ -1759,6 +2336,16 @@ navigator.gpu_js = (() => {
          } catch (e) {
             this._catch(e);
             return new GPUPipelineLayout_JS(this, null);
+         }
+      }
+      createBindGroup(desc) {
+         try {
+            VALIDATE(!this._is_lost, 'Device is lost.');
+            REQUIRE_NON_NULL(desc, 'GPUBindGroupDescriptor');
+            return new GPUBindGroup_JS(this, desc);
+         } catch (e) {
+            this._catch(e);
+            return new GPUBindGroup_JS(this, null);
          }
       }
 

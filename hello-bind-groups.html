@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html>
+   <head>
+      <meta charset='utf-8'>
+      <script src='webgpu.js'></script>
+   </head>
+   <body>
+      <canvas id='e_canvas'>
+      <script>
+
+const VS_SRC = `
+   #version 300 es
+   layout(std140) uniform;
+
+   layout(location = 0) in vec2 a_pos;
+   out vec2 v_pos;
+
+   //uniform webgpu_binding3 {
+   //   mat3 u_vert_mat;
+   //};
+
+   void main() {
+      gl_Position = vec4(a_pos * 2. - 1., 0, 1);
+      v_pos = a_pos;
+   }
+`.trim();
+
+const FS_SRC = `
+   #version 300 es
+   precision mediump float;
+   layout(std140) uniform;
+
+   in vec2 v_pos;
+   out lowp vec4 fd_color;
+
+   #define u_tex webgpu_group0_binding0_u_tex
+   uniform sampler2D u_tex;
+   // binding1 is u_tex's sampler object.
+   uniform webgpu_group0_binding2 {
+      vec4 u_color;
+   };
+
+   void main() {
+      fd_color = texture(u_tex, v_pos);
+      fd_color *= u_color;
+   }
+`.trim();
+
+(async () => {
+   const adapter = await navigator.gpu.requestAdapter();
+   const dev = await adapter.requestDevice({
+      extensions: adapter.extensions,
+   });
+   const q = dev.getQueue();
+
+   const sc_context = e_canvas.getContext('gpu');
+   const sc = sc_context.configureSwapChain({
+      device: dev,
+      format: 'rgba8unorm',
+   });
+
+   const canvas_tex = sc.getCurrentTexture();
+   const canvas_t_view = canvas_tex.createDefaultView();
+
+   // -
+
+   function make_buffer(dev, data, usage) {
+      let [buf, mab] = dev.createBufferMapped({
+         size: data.byteLength,
+         usage: usage,
+      });
+      new data.constructor(mab).set(data);
+      buf.unmap();
+      return buf;
+   }
+
+   const v_data = new Float32Array([
+      0, 0,
+      1, 0,
+      0, 1,
+      1, 1,
+   ]);
+   const vbuf = make_buffer(dev, v_data, GPUBufferUsage.VERTEX);
+   const ibuf = make_buffer(dev, new Uint16Array([0, 1, 3, 2, 1, 3]), GPUBufferUsage.INDEX);
+
+   const UNIFORM_OFFSET_ALIGN = 256;
+   const u_color_data = new Float32Array(UNIFORM_OFFSET_ALIGN/4 + 4);
+   u_color_data.set([1, 1, 1, 0.5]);
+   u_color_data.set([1, 1, 0, 0.5], UNIFORM_OFFSET_ALIGN/4);
+   const u_color_buf = make_buffer(dev, u_color_data, GPUBufferUsage.UNIFORM);
+
+   // -
+
+   const tex_data = new Uint8Array([
+      255,0,255,255, 0,0,0,255,     255,0,255,255, 0,0,0,255,
+      0,0,0,255,     255,0,255,255, 0,0,0,255,     255,0,255,255,
+      255,0,255,255, 0,0,0,255,     255,0,255,255, 0,0,0,255,
+      0,0,0,255,     255,0,255,255, 0,0,0,255,     255,0,255,255,
+   ]);
+   const tex_buf = make_buffer(dev, tex_data, GPUBufferUsage.COPY_SRC);
+
+   const tex = dev.createTexture({
+      size: [4, 4, 1],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.SAMPLED,
+   });
+   const t_view = tex.createDefaultView();
+   const sampler = dev.createSampler();
+
+   // -
+
+   const v_mod = dev.createShaderModule({code: VS_SRC});
+   const f_mod = dev.createShaderModule({code: FS_SRC});
+
+   const bg_layout = dev.createBindGroupLayout({
+      bindings: [{
+      //   binding: 3,
+      //   visibility: GPUShaderStageBit.VERTEX,
+      //   type: 'uniform-buffer',
+      //   dynamic: true,
+      //},{
+         binding: 0,
+         visibility: GPUShaderStageBit.FRAGMENT,
+         type: 'sampled-texture',
+         textureDimension: '2d',
+      },{
+         binding: 1,
+         visibility: GPUShaderStageBit.FRAGMENT,
+         type: 'sampler',
+      },{
+         binding: 2,
+         visibility: GPUShaderStageBit.FRAGMENT,
+         type: 'uniform-buffer',
+         dynamic: true,
+      }],
+   });
+
+   const p_layout = dev.createPipelineLayout({
+      bindGroupLayouts: [bg_layout],
+   });
+
+   const bg = dev.createBindGroup({
+      layout: bg_layout,
+      bindings: [{
+         binding: 0,
+         resource: t_view,
+      }, {
+         binding: 1,
+         resource: sampler,
+      }, {
+         binding: 2,
+         resource: {buffer: u_color_buf},
+      }],
+   });
+
+   const rp = dev.createRenderPipeline({
+      layout: p_layout,
+      vertexStage: {
+         module: v_mod,
+         entryPoint: 'main',
+      },
+      fragmentStage: {
+         module: f_mod,
+         entryPoint: 'main',
+      },
+      primitiveTopology: 'triangle-list',
+      rasterizationState: {},
+      colorStates: [{
+         format: 'rgba8unorm',
+         alphaBlend: {
+            srcFactor: 'one',
+            dstFactor: 'one-minus-src-alpha',
+         },
+         colorBlend: {
+            srcFactor: 'src-alpha',
+            dstFactor: 'one-minus-src-alpha',
+         },
+      }],
+      vertexInput: {
+         indexFormat: 'uint16',
+         vertexBuffers: [{
+            stride: 4*2,
+            attributeSet: [{
+               format: 'float2',
+               shaderLocation: 0,
+               offset: 4*0,
+            }],
+         }],
+      },
+   });
+
+   // -
+
+   const cmd_enc = dev.createCommandEncoder({});
+   cmd_enc.copyBufferToTexture({
+      buffer: tex_buf,
+      rowPitch: 4*4,
+      imageHeight: 4*4*4,
+   },{
+      texture: tex,
+   }, [4, 4, 1]);
+   const pass = cmd_enc.beginRenderPass({
+      colorAttachments: [
+         {
+            attachment: canvas_t_view,
+            loadOp: 'clear',
+            storeOp: 'store',
+            clearColor: [0.1, 0.3, 0.1, 1],
+         }
+      ],
+   });
+   pass.setBindGroup(0, bg, [0]);
+   pass.setPipeline(rp);
+   pass.setVertexBuffers(0, [vbuf], [0]);
+   pass.draw(3, 1, 0, 0);
+   pass.setBindGroup(0, bg, [UNIFORM_OFFSET_ALIGN]);
+   pass.setIndexBuffer(ibuf, 0);
+   pass.drawIndexed(3, 1, 0, 0, 0);
+   pass.endPass();
+
+   const cbuf = cmd_enc.finish();
+   q.submit([cbuf]);
+})();
+
+      </script>
+   </body>
+</html>
