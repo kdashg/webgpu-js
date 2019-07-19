@@ -589,6 +589,14 @@ navigator.gpu_js = (() => {
          ASSERT(desc.baseArrayLayer == 0, 'Not supported: baseArrayLayer > 0');
          ASSERT(desc.arrayLayerCount == tex.desc.arrayLayerCount,
                 'Not supported: GPUTextureViewDescriptor.arrayLayerCount != GPUTextureDescriptor.arrayLayerCount');
+
+         this._depth = tex._depth;
+         this._stencil = tex._stencil;
+         if (desc.aspect == 'depth-only') {
+            this._stencil = undefined;
+         } else if (desc.aspect == 'stencil-only') {
+            this._depth = undefined;
+         }
       }
 
       _bind_texture() {
@@ -597,6 +605,48 @@ navigator.gpu_js = (() => {
          gl.bindTexture(gl_obj.target, gl_obj);
          gl.texParameteri(gl_obj.target, GL.TEXTURE_BASE_LEVEL, this.desc.baseMipLevel);
          gl.texParameteri(gl_obj.target, GL.TEXTURE_MAX_LEVEL, this.desc.baseMipLevel + this.desc.mipLevelCount);
+      }
+
+      _framebuffer_attach(fb_target, attachment_enum) {
+         const gl = this.tex.device.gl;
+         const tex = this.tex;
+
+         if (tex.swap_chain) {
+            // We'll need a temp.
+            console.error('Creating temporary rendertarget for SwapChain.');
+         }
+         const gl_obj = tex._ensure_tex();
+         const tex_target = gl_obj.target;
+         if (tex_target == GL.TEXTURE_2D) {
+            gl.framebufferTexture2D(fb_target, attachment_enum,
+                                    tex_target, gl_obj, this.desc.baseMipLevel);
+         } else if (tex_target == GL.TEXTURE_CUBE_MAP) {
+            gl.framebufferTexture2D(fb_target, attachment_enum,
+                                    TEXTURE_CUBE_MAP_POSITIVE_X + this.desc.baseArrayLayer,
+                                    gl_obj, this.desc.baseMipLevel);
+         } else if (tex_target == GL.TEXTURE_3D ||
+                    tex_target == GL.TEXTURE_2D_ARRAY) {
+            gl.framebufferTextureLayer(fb_target, attachment_enum,
+                                       gl_obj, this.desc.baseMipLevel, this.desc.baseArrayLayer);
+         } else {
+            ASSERT(false, 'Bad target: 0x' + tex_target.toString(16));
+         }
+      }
+
+      _bind_as_draw_fb() {
+         const gl = this.tex.device.gl;
+         ASSERT(this.desc.arrayLayerCount == 1, 'desc.arrayLayerCount: 1');
+         ASSERT(this.desc.mipLevelCount == 1, 'desc.mipLevelCount: 1');
+         if (this._draw_fb === undefined) {
+            if (this.tex.swap_chain) {
+               this._draw_fb = null;
+            } else {
+               this._draw_fb = gl.createFramebuffer();
+               gl.bindFramebuffer(GL.DRAW_FRAMEBUFFER, this._draw_fb);
+               this._framebuffer_attach(GL.DRAW_FRAMEBUFFER, GL.COLOR_ATTACHMENT0);
+            }
+         }
+         gl.bindFramebuffer(GL.DRAW_FRAMEBUFFER, this._draw_fb);
       }
    }
 
@@ -712,6 +762,12 @@ navigator.gpu_js = (() => {
       'R11F_G11F_B10F',
    ].map(x => [GL[x], true]));
 
+   const DEPTH_STENCIL_FORMAT = {
+      'depth32float': {depth: true},
+      'depth24plus': {depth: true},
+      'depth24plus-stencil8': {depth: true, stencil: true},
+   };
+
    class GPUTexture_JS {
       constructor(device, desc, swap_chain) {
          this.device = device;
@@ -747,6 +803,12 @@ navigator.gpu_js = (() => {
             desc.size.depth = 1;
          } else {
             desc.size.arrayLayerCount = 1;
+         }
+
+         const ds_info = DEPTH_STENCIL_FORMAT[desc.format];
+         if (ds_info) {
+            this._depth = ds_info.depth;
+            this._stencil = ds_info.stencil;
          }
 
          if (!this.swap_chain) {
@@ -1309,7 +1371,7 @@ navigator.gpu_js = (() => {
          };
       }
 
-      _setup(color_attachments, ds_attach_desc) {
+      _setup(fb, color_attachments, ds_attach_desc) {
          const gl = this.device.gl;
 
          gl.bindVertexArray(this.vao);
@@ -1341,10 +1403,10 @@ navigator.gpu_js = (() => {
                while (draw_bufs.length < i) {
                   draw_bufs.push(0);
                }
-               if (ca.attachment.tex.swap_chain) {
-                  draw_bufs.push(GL.BACK);
-               } else {
+               if (fb) {
                   draw_bufs.push(GL.COLOR_ATTACHMENT0 + i);
+               } else {
+                  draw_bufs.push(GL.BACK);
                }
             }
             gl.drawBuffers(draw_bufs);
@@ -1587,20 +1649,67 @@ navigator.gpu_js = (() => {
          desc =  make_GPURenderPassDescriptor(desc);
          this.desc = desc;
 
+         const attachment = desc.depthStencilAttachment || desc.colorAttachments[0];
+         VALIDATE(attachment, 'Must have at least one color or depthStencil attachment.');
+         const size = attachment.attachment.tex.desc.size;
+
          const device = cmd_enc.device;
          const gl = device.gl;
 
+         // -
+
+         let direct_backbuffer_bypass = (desc.colorAttachments.length == 1 &&
+                                         desc.colorAttachments[0].attachment.tex.swap_chain &&
+                                         !desc.colorAttachments[0].resolveTarget);
+         const ds_desc = desc.depthStencilAttachment;
+         if (ds_desc) {
+            if (ds_desc.attachment._depth) {
+               direct_backbuffer_bypass &= (ds_desc.depthLoadOp != 'load' &&
+                                            ds_desc.depthStoreOp != 'store');
+            }
+            if (ds_desc.attachment._stencil) {
+               direct_backbuffer_bypass &= (ds_desc.stencilLoadOp != 'load' &&
+                                            ds_desc.stencilStoreOp != 'store');
+            }
+         }
+         //direct_backbuffer_bypass = false;
+
          this.fb = null;
-         if (desc.colorAttachments.length == 1 &&
-            desc.colorAttachments[0].attachment.tex.swap_chain) {
-         } else {
+         if (!direct_backbuffer_bypass) {
+            // Guess not!
             this.fb = gl.createFramebuffer();
          }
-         gl.bindFramebuffer(GL.FRAMEBUFFER, this.fb);
+
+         // -
+
+         function validate_view(name, view, for_depth_stencil) {
+            VALIDATE(view.desc.arrayLayerCount == 1, name + ': Must have arrayLayerCount=1.');
+            VALIDATE(view.desc.mipLevelCount == 1, name + ': Must have mipLevelCount=1.');
+            VALIDATE(view.tex.desc.size.width == size.width &&
+                     view.tex.desc.size.height == size.height, name + ': Sizes must match.');
+            if (for_depth_stencil) {
+               VALIDATE(view._depth || view._stencil, name + ': Must have depth or stencil.');
+            } else {
+               VALIDATE(!view._depth && !view._stencil, name + ': Must not have depth or stencil.');
+            }
+         }
+
+         // -
 
          desc.colorAttachments.forEach((x, i) => {
             const view = x.attachment;
             const tex = view.tex;
+            validate_view('colorAttachments[].attachment', view, false);
+
+            if (this.fb) {
+               if (tex.swap_chain) {
+                  // Bad news...
+                  console.error('SwapChain Texture attached, but didn\'t qualify for direct_backbuffer_bypass.');
+               }
+               gl.bindFramebuffer(GL.FRAMEBUFFER, this.fb);
+               view._framebuffer_attach(GL.FRAMEBUFFER, GL.COLOR_ATTACHMENT0 + i);
+            }
+
             if (x.loadOp == 'clear') {
                const color = [
                   x.clearColor.r,
@@ -1620,76 +1729,118 @@ navigator.gpu_js = (() => {
                   if (did_load)
                      return;
                   did_load = true;
-                  //console.log('clear', i, color);
                   fn_clear.call(gl, GL.COLOR, i, color);
                };
             } else {
                x._load_op = () => {};
             }
 
-            if (this.fb) {
-               if (tex.target == GL.TEXTURE_2D) {
-                  gl.framebufferTexture2D(GL.FRAMEBUFFER, GL.COLOR_ATTACHMENT0 + i,
-                                          tex.target, tex.tex, view.desc.baseMipLevel);
-               } else if (tex.target == GL.TEXTURE_CUBE_MAP) {
-                  gl.framebufferTexture2D(GL.FRAMEBUFFER, GL.COLOR_ATTACHMENT0 + i,
-                                          TEXTURE_CUBE_MAP_POSITIVE_X + view.desc.baseArrayLayer,
-                                          tex.tex, view.desc.baseMipLevel);
-               } else if (tex.target == GL.TEXTURE_3D ||
-                          tex.target == GL.TEXTURE_2D_ARRAY) {
-                  gl.framebufferTextureLayer(GL.FRAMEBUFFER, GL.COLOR_ATTACHMENT0 + i,
-                                             tex.tex, view.desc.baseMipLevel, view.desc.baseArrayLayer);
-               }
+            if (x.resolveTarget) {
+               validate_view('colorAttachments[].resolveTarget', x.resolveTarget, false);
+               x.resolveTarget._bind_as_draw_fb(); // Ensure created.
             }
+
+            x._store_op = () => {
+               let read_attach_enum = GL.COLOR_ATTACHMENT0 + i;
+               if (!this.fb) {
+                  read_attach_enum = GL.COLOR;
+               }
+
+               function blit() {
+                  gl.readBuffer(read_attach_enum);
+                  const w = size.width;
+                  const h = size.height;
+                  gl.blitFramebuffer(0,0, w,h, 0,0, w,h, GL.COLOR_BUFFER_BIT, GL.NEAREST);
+               }
+
+               let discard = true;
+               if (x.resolveTarget) {
+                  x.resolveTarget._bind_as_draw_fb();
+                  blit();
+               } else if (x.storeOp == 'store') {
+                  if (this.fb && tex.swap_chain) {
+                     gl.bindFramebuffer(GL.DRAW_FRAMEBUFFER, null);
+                     blit();
+                  } else {
+                     discard = false;
+                  }
+               }
+               if (discard) {
+                  gl.invalidateFramebuffer(GL.READ_FRAMEBUFFER, [read_attach_enum]);
+               }
+            };
          });
 
-         const DEPTH_STENCIL_FORMAT = {
-            'depth32float': {depth: true},
-            'depth24plus': {depth: true},
-            'depth24plus-stencil8': {depth: true, stencil: true},
-            'r8sint': {stencil: true}, // Maybe?
-         };
-         const DEPTH_STENCIL_ASPECT = {
-            'depth-only': {depth: true},
-            'stencil-only': {stencil: true},
-         };
+         // -
 
-         const ds_attach_desc = desc.depthStencilAttachment;
-         if (ds_attach_desc) {
-            let ds_info = DEPTH_STENCIL_ASPECT[ds_attach_desc.attachment.desc.aspect];
-            if (!ds_info) {
-               ds_info = DEPTH_STENCIL_FORMAT[ds_attach_desc.attachment.desc.format];
+         if (ds_desc) {
+            const view = ds_desc.attachment;
+            validate_view('depthStencilAttachment.attachment', view, true);
+
+            if (this.fb) {
+               gl.bindFramebuffer(GL.FRAMEBUFFER, this.fb);
+               if (view._depth) {
+                  view._framebuffer_attach(GL.FRAMEBUFFER, GL.DEPTH_ATTACHMENT);
+               }
+               if (view._stencil) {
+                  view._framebuffer_attach(GL.FRAMEBUFFER, GL.STENCIL_ATTACHMENT);
+               }
             }
+
             let did_load = false;
-            ds_attach_desc._load_op = () => {
+            ds_desc._load_op = () => {
                if (did_load)
                   return;
                did_load = true;
-               const clear_depth = (ds_info.depth && ds_attach_desc.depthLoadOp == 'clear');
-               const clear_stencil = (ds_info.stencil && ds_attach_desc.stencilLoadOp == 'clear');
+               const clear_depth = (view._depth && ds_desc.depthLoadOp == 'clear');
+               const clear_stencil = (view._stencil && ds_desc.stencilLoadOp == 'clear');
                if (clear_depth) {
                   gl.depthMask(true);
                   if (!clear_stencil) {
-                     gl.clearBufferfv(GL.DEPTH, 0, [ds_attach_desc.clearDepth]);
+                     gl.clearBufferfv(GL.DEPTH, 0, [ds_desc.clearDepth]);
                   }
                }
                if (clear_stencil) {
                   gl.stencilMask(0xffffffff);
                   if (clear_depth) {
-                     gl.clearBufferfi(GL.DEPTH_STENCIL, 0, ds_attach_desc.clearDepth, ds_attach_desc.clearStencil);
+                     gl.clearBufferfi(GL.DEPTH_STENCIL, 0, ds_desc.clearDepth, ds_desc.clearStencil);
                   } else {
-                     gl.clearBufferiv(GL.STENCIL, 0, [ds_attach_desc.clearStencil]);
+                     gl.clearBufferiv(GL.STENCIL, 0, [ds_desc.clearStencil]);
                   }
+               }
+            };
+            ds_desc._store_op = () => {
+               let keep_depth = (view._depth && ds_desc.depthStoreOp == 'store');
+               let keep_stencil = (view._stencil && ds_desc.stencilStoreOp == 'store');
+
+               let depth_enum = GL.DEPTH_ATTACHMENT;
+               let stencil_enum = GL.STENCIL_ATTACHMENT;
+               if (!this.fb) {
+                  depth_enum = GL.DEPTH;
+                  stencil_enum = GL.STENCIL;
+               }
+               let discard_list = [];
+               if (!keep_depth) {
+                  discard_list.push(depth_enum);
+               }
+               if (!keep_stencil) {
+                  discard_list.push(stencil_enum);
+               }
+               if (discard_list.length) {
+                  gl.invalidateFramebuffer(GL.READ_FRAMEBUFFER, discard_list);
                }
             };
          }
 
+         // -
+
+         this.cmd_enc._add(() => {
+            gl.bindFramebuffer(GL.FRAMEBUFFER, this.fb);
+         });
+
          this._vert_buf_list = [];
          this._bind_group_list = [];
          this._deferred_bind_group_updates = [];
-
-         const attachment = desc.depthStencilAttachment || desc.colorAttachments[0];
-         const size = attachment.attachment.tex.desc.size;
 
          this.setBlendColor([1, 1, 1, 1]);
          this.setStencilReference(0);
@@ -1812,7 +1963,7 @@ navigator.gpu_js = (() => {
             this.cmd_enc._add(() => {
                // Generally speaking, don't use `this.foo` in _add, but rather use copies.
                // Exception: Immutable objects:
-               pipeline._setup(this.desc.colorAttachments, this.desc.depthStencilAttachment);
+               pipeline._setup(this.fb, this.desc.colorAttachments, this.desc.depthStencilAttachment);
             });
             this._pipeline_ready = true;
          }
@@ -1931,7 +2082,13 @@ navigator.gpu_js = (() => {
             VALIDATE(this.desc, 'Invalid object.');
             this.cmd_enc._add(() => {
                for (const x of this.desc.colorAttachments) {
-                  x._load_op();
+                  x._load_op(); // In case it was never otherwise used.
+                  x._store_op();
+               }
+               const ds_desc = this.desc.depthStencilAttachment;
+               if (ds_desc) {
+                  ds_desc._load_op();
+                  ds_desc._store_op();
                }
             });
             super.endPass();
