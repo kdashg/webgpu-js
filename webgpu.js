@@ -601,7 +601,7 @@ navigator.gpu_js = (() => {
 
       _bind_texture() {
          const gl = this.tex.device.gl;
-         const gl_obj = this.tex._ensure_tex(this.desc.dimension);
+         const gl_obj = this.tex._ensure_gl_obj(this.desc.dimension);
          gl.bindTexture(gl_obj.target, gl_obj);
          gl.texParameteri(gl_obj.target, GL.TEXTURE_BASE_LEVEL, this.desc.baseMipLevel);
          gl.texParameteri(gl_obj.target, GL.TEXTURE_MAX_LEVEL, this.desc.baseMipLevel + this.desc.mipLevelCount);
@@ -615,21 +615,23 @@ navigator.gpu_js = (() => {
             // We'll need a temp.
             console.error('Creating temporary rendertarget for SwapChain.');
          }
-         const gl_obj = tex._ensure_tex();
-         const tex_target = gl_obj.target;
-         if (tex_target == GL.TEXTURE_2D) {
+         const gl_obj = tex._ensure_gl_obj();
+         const obj_target = gl_obj.target;
+         if (obj_target == GL.TEXTURE_2D) {
             gl.framebufferTexture2D(fb_target, attachment_enum,
-                                    tex_target, gl_obj, this.desc.baseMipLevel);
-         } else if (tex_target == GL.TEXTURE_CUBE_MAP) {
+                                    obj_target, gl_obj, this.desc.baseMipLevel);
+         } else if (obj_target == GL.TEXTURE_CUBE_MAP) {
             gl.framebufferTexture2D(fb_target, attachment_enum,
                                     TEXTURE_CUBE_MAP_POSITIVE_X + this.desc.baseArrayLayer,
                                     gl_obj, this.desc.baseMipLevel);
-         } else if (tex_target == GL.TEXTURE_3D ||
-                    tex_target == GL.TEXTURE_2D_ARRAY) {
+         } else if (obj_target == GL.TEXTURE_3D ||
+                    obj_target == GL.TEXTURE_2D_ARRAY) {
             gl.framebufferTextureLayer(fb_target, attachment_enum,
                                        gl_obj, this.desc.baseMipLevel, this.desc.baseArrayLayer);
+         } else if (obj_target == GL.RENDERBUFFER) {
+            gl.framebufferRenderbuffer(fb_target, attachment_enum, obj_target, gl_obj);
          } else {
-            ASSERT(false, 'Bad target: 0x' + tex_target.toString(16));
+            ASSERT(false, 'Bad obj_target: 0x' + obj_target.toString(16));
          }
       }
 
@@ -794,15 +796,24 @@ navigator.gpu_js = (() => {
                    'Unsupported: GPUTextureUsage.[COPY_SRC,OUTPUT_ATTACHMENT] with ' + desc.format);
          }
 
-         ASSERT(desc.sampleCount == 1, 'desc.sampleCount >1 not supported.');
          if (desc.dimension == '1d') {
             desc.size.height = 1;
             desc.size.depth = 1;
-            desc.size.arrayLayerCount = 1;
+            desc.arrayLayerCount = 1;
          } else if (desc.dimension == '2d') {
             desc.size.depth = 1;
          } else {
-            desc.size.arrayLayerCount = 1;
+            desc.arrayLayerCount = 1;
+         }
+         if (desc.sampleCount != 1) {
+            ASSERT(desc.dimension == '2d',
+                   'Unsupported: desc.sampleCount!=1 && dimension!=2d');
+            ASSERT(desc.arrayLayerCount == 1,
+                   'Unsupported: desc.sampleCount!=1 && arrayLayerCount!=1)');
+            ASSERT(desc.mipLevelCount == 1,
+                   'Unsupported: desc.sampleCount!=1 && mipLevelCount!=1)');
+            ASSERT(!(desc.usage & GPUTextureUsage.SAMPLED),
+                   'Unsupported: desc.sampleCount!=1 && (desc.usage & GPUTextureUsage.SAMPLED)');
          }
 
          const ds_info = DEPTH_STENCIL_FORMAT[desc.format];
@@ -812,61 +823,69 @@ navigator.gpu_js = (() => {
          }
 
          if (!this.swap_chain) {
-            this._ensure_tex();
+            this._ensure_gl_obj();
          }
       }
 
-      _ensure_tex(dim) {
+      _ensure_gl_obj(dim) {
+         const desc = this.desc;
+         const gl = this.device.gl;
+
          if (this._gl_obj) {
             ASSERT(dim == this._gl_obj.dim,
             'GPUTextureViewDimension conversion not supported: ' + dim + '->' + this._gl_obj.dim);
+         } else if (desc.sampleCount != 1) {
+            this._gl_obj = gl.createRenderbuffer();
+            this._gl_obj.target = GL.RENDERBUFFER;
+
+            const format = TEX_FORMAT_INFO[desc.format].format;
+            gl.bindRenderbuffer(this._gl_obj.target, this._gl_obj);
+            gl.renderbufferStorageMultisample(this._gl_obj.target, desc.sampleCount, format,
+                                              desc.size.width, desc.size.height);
          } else {
             if (!dim) {
                // Guess!
-               if (this.desc.dimension == '1d') {
+               if (desc.dimension == '1d') {
                   dim = '2d';
-               } else if (this.desc.dimension == '3d') {
+               } else if (desc.dimension == '3d') {
                   dim = '3d';
-               } else if (this.desc.arrayLayerCount == 6 &&
-                          this.desc.usage & GPUTextureUsage.SAMPLED) {
+               } else if (desc.arrayLayerCount == 6 &&
+                          desc.usage & GPUTextureUsage.SAMPLED) {
                   dim = 'cube'; // A Good Guess. :)
-               } else if (this.desc.arrayLayerCount > 1) {
+               } else if (desc.arrayLayerCount > 1) {
                   dim = '2d-array';
                } else {
                   dim = '2d';
                }
             }
 
-            const desc = this.desc;
-            const gl = this.device.gl;
-            const tex = gl.createTexture();
-            this._gl_obj = tex;
-            tex.dim = dim;
-            tex.format = TEX_FORMAT_INFO[this.desc.format].format;
+            this._gl_obj = gl.createTexture();
 
-            function bind_into(target) {
-               tex.target = target;
-               gl.bindTexture(target, tex);
-            }
+            const bind_into = (target) => {
+               this._gl_obj.target = target;
+               gl.bindTexture(this._gl_obj.target, this._gl_obj);
+            };
 
+            const format = TEX_FORMAT_INFO[desc.format].format;
             if (dim == '3d') {
                bind_into(GL.TEXTURE_3D);
-               gl.texStorage3D(tex.target, desc.mipLevelCount, tex.format, desc.size.width,
+               gl.texStorage3D(this._gl_obj.target, desc.mipLevelCount, format, desc.size.width,
                                desc.size.height, desc.size.depth);
             } else if (dim == 'cube') {
                bind_into(GL.TEXTURE_CUBE_MAP);
-               gl.texStorage2D(tex.target, desc.mipLevelCount, tex.format, desc.size.width,
+               gl.texStorage2D(this._gl_obj.target, desc.mipLevelCount, format, desc.size.width,
                                desc.size.height);
             } else if (dim == '2d-array') {
                bind_into(GL.TEXTURE_2D_ARRAY);
-               gl.texStorage3D(tex.target, desc.mipLevelCount, tex.format, desc.size.width,
+               gl.texStorage3D(this._gl_obj.target, desc.mipLevelCount, format, desc.size.width,
                                desc.size.height, desc.arrayLayerCount);
             } else {
                bind_into(GL.TEXTURE_2D);
-               gl.texStorage2D(tex.target, desc.mipLevelCount, tex.format, desc.size.width,
+               gl.texStorage2D(this._gl_obj.target, desc.mipLevelCount, format, desc.size.width,
                                desc.size.height);
             }
          }
+         this._gl_obj.dim = dim;
          return this._gl_obj;
       }
 
@@ -1736,7 +1755,10 @@ navigator.gpu_js = (() => {
             }
 
             if (x.resolveTarget) {
-               validate_view('colorAttachments[].resolveTarget', x.resolveTarget, false);
+               const name = 'colorAttachments[].resolveTarget';
+               validate_view(name, x.resolveTarget, false);
+               VALIDATE(x.resolveTarget.tex.desc.sampleCount == 1,
+                        name + ': Must have sampleCount=1.');
                x.resolveTarget._bind_as_draw_fb(); // Ensure created.
             }
 
